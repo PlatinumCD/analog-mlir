@@ -9,6 +9,6 @@ int main(int argc, char** argv) {
 
   DialectRegistry registry;
   return mlir::asMainReturnCode(mlir::MlirOptMain(
-      argc, argv, "MLIR modular optimizer driver\n", registry));
+      argc, argv, "Analog MLIR modular optimizer\n", registry));
 
 }
