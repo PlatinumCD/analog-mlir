@@ -1,3 +1,4 @@
+#include "analog-mlir/Dialect/Analog/IR/AnalogDialect.h"
 
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
@@ -9,7 +10,7 @@ int main(int argc, char** argv) {
   DialectRegistry registry;
 
   registerAllDialects(registry);
-  // registry.insert<analog::AnalogDialect>();
+  registry.insert<analog::AnalogDialect>();
 
   registerAllPasses();
 

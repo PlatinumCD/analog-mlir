@@ -1,17 +1,14 @@
-include "Analog.td"
-include "mlir/IR/AttrTypeBase.td"
 
-class Analog_Type<string name, string mnemonic, list<Trait> traits = []>
-    : TypeDef<Analog_Dialect, name, traits> {
-  let mnemonic = mnemonic;
-}
+#ifndef ANALOG_TYPES
+#define ANALOG_TYPES
 
+include "analog-mlir/Dialect/Analog/IR/AnalogBase.td"
 
 // =====-------------------------------------------===== 
 //       WeightsType
 // =====-------------------------------------------===== 
 
-def Analog_WeightsType<"Weights", "weights"> {
+def Analog_WeightsType : Analog_Type<"Weights", "weights"> {
   let summary = "Analog weights container type";
 
   let description = [{
@@ -27,12 +24,7 @@ def Analog_WeightsType<"Weights", "weights"> {
     "int64_t":$stride
   );
 
-  // AssemblyFormat is how it prints and parses
-  let assemblyFormat = [{
-    < custom<ShapeAndElt>($shape, $elementType),
-      layout = $layout,
-      stride = $stride >
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   // Generate Verify Declarations (We write this function)
   let genVerifyDecl = 1;
@@ -51,3 +43,5 @@ def Analog_WeightsType<"Weights", "weights"> {
 
   }];
 }
+
+#endif
