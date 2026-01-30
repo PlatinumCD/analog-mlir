@@ -1,4 +1,5 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogDialect.h"
+#include "analog-mlir/Transforms/NN/Passes.h"
 
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
@@ -12,7 +13,8 @@ int main(int argc, char** argv) {
   registerAllDialects(registry);
   registry.insert<analog::AnalogDialect>();
 
-  registerAllPasses();
+  mlir::nn::registerNNPasses();
+//  registerAllPasses();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Analog MLIR modular optimizer\n", registry));
