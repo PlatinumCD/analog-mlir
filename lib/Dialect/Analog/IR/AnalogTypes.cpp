@@ -36,8 +36,7 @@ mlir::analog::WeightsType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType,
-    mlir::StringAttr layout,
-    int64_t stride) {
+    mlir::StringAttr layout) {
 
   if (shape.empty())
     return emitError() << "shape must have at least 1 dimension";
@@ -50,12 +49,6 @@ mlir::analog::WeightsType::verify(
 
   if (shape.size() != 2)
     return emitError() << "expected rank-2 weights, got rank " << shape.size();
-
-  if (stride <= 0)
-    return emitError() << "stride must be > 0";
-
-  if (stride < shape[1])
-    return emitError() << "stride must be >= inner dimension (" << shape[1] << ")";
 
   return mlir::success();
 }
@@ -116,7 +109,6 @@ mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
   StringAttr layout;
-  int64_t stride;
 
   // Parse 8x8xf32
   if (parseShapeAndElt(parser, shape, elementType))
@@ -135,20 +127,7 @@ mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
   if (parser.parseAttribute(layout))
     return Type();
 
-  // , stride=8
-  if (parser.parseComma())
-    return Type();
-
-  if (parser.parseKeyword("stride"))
-    return Type();
-
-  if (parser.parseEqual())
-    return Type();
-
-  if (parser.parseInteger(stride))
-    return Type();
-
-  return get(parser.getContext(), shape, elementType, layout, stride);
+  return get(parser.getContext(), shape, elementType, layout);
 }
 
 //===----------------------------------------------------------------------===//
@@ -160,7 +139,6 @@ mlir::analog::WeightsType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
   printer << ", layout=";
   printer.printAttribute(getLayout());
-  printer << ", stride=" << getStride();
 }
 
 

@@ -20,8 +20,7 @@ def Analog_WeightsType : Analog_Type<"Weights", "weights"> {
   let parameters = (ins
     ArrayRefParameter<"int64_t", "Shape (e.g., [8,8])">:$shape,
     "Type":$elementType,
-    "StringAttr":$layout,
-    "int64_t":$stride
+    "StringAttr":$layout
   );
 
   let hasCustomAssemblyFormat = 1;

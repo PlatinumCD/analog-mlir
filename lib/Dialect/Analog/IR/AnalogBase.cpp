@@ -16,6 +16,7 @@ using namespace mlir::analog;
 
 void AnalogDialect::initialize() {
   registerTypes();
+  registerOps();
 }
 
 Type AnalogDialect::parseType(DialectAsmParser &parser) const {

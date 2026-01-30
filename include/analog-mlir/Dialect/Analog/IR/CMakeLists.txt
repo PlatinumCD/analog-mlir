@@ -6,6 +6,8 @@ mlir_tablegen(AnalogBase.h.inc -gen-dialect-decls)
 mlir_tablegen(AnalogBase.cpp.inc -gen-dialect-defs)
 mlir_tablegen(AnalogTypes.h.inc -gen-typedef-decls)
 mlir_tablegen(AnalogTypes.cpp.inc -gen-typedef-defs)
+mlir_tablegen(AnalogOps.h.inc -gen-op-decls)
+mlir_tablegen(AnalogOps.cpp.inc -gen-op-defs)
 
 add_public_tablegen_target(AnalogIRIncGen)
 

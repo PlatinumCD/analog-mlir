@@ -1,8 +1,8 @@
-#ifndef ANALOG_TD
-#define ANALOG_TD
+#ifndef ANALOG_DIALECT_TD
+#define ANALOG_DIALECT_TD
 
-include "AnalogBase.td"
+include "analog-mlir/Dialect/Analog/IR/AnalogBase.td"
+include "analog-mlir/Dialect/Analog/IR/AnalogTypes.td"
+include "analog-mlir/Dialect/Analog/IR/AnalogOps.td"
 
-include "AnalogTypes.td"
-
-#endif // ANALOG_TD
+#endif // ANALOG_DIALECT_TD
