@@ -9,6 +9,7 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/OpAsmSupport.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/DialectImplementation.h"
 #include "mlir/Support/LogicalResult.h"
 
 #define DEBUG_TYPE "analog-types"
@@ -35,17 +36,13 @@ mlir::LogicalResult
 mlir::analog::WeightsType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType,
-    mlir::StringAttr layout) {
+    mlir::Type elementType) {
 
   if (shape.empty())
     return emitError() << "shape must have at least 1 dimension";
 
   if (!elementType || !mlir::isa<mlir::FloatType>(elementType))
     return emitError() << "elementType must be a float type";
-
-  if (!layout)
-    return emitError() << "layout must be a string attribute";
 
   if (shape.size() != 2)
     return emitError() << "expected rank-2 weights, got rank " << shape.size();
@@ -108,26 +105,12 @@ mlir::Type
 mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
-  StringAttr layout;
 
   // Parse 8x8xf32
   if (parseShapeAndElt(parser, shape, elementType))
     return Type();
 
-  // , layout="T"
-  if (parser.parseComma())
-    return Type();
-
-  if (parser.parseKeyword("layout"))
-    return Type();
-
-  if (parser.parseEqual())
-    return Type();
-
-  if (parser.parseAttribute(layout))
-    return Type();
-
-  return get(parser.getContext(), shape, elementType, layout);
+  return get(parser.getContext(), shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -137,8 +120,4 @@ mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
 void
 mlir::analog::WeightsType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
-  printer << ", layout=";
-  printer.printAttribute(getLayout());
 }
-
-

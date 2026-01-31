@@ -3,6 +3,7 @@
 
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/CommonAttrConstraints.td"
 
 //===- AnalogOps.td -------------------------------------------------------===//
 //
@@ -24,15 +25,16 @@ def Analog_WeightsFromConstOp
   let summary = "Materialize analog weights from a constant tensor";
 
   let arguments = (ins
-    AnyRankedTensor:$input
+    AnyRankedTensor:$input,
+    I64Attr:$layer
   );
 
   let results = (outs
-    Analog_WeightsType:$results
+    Analog_WeightsType:$result
   );
 
   let assemblyFormat = [{
-    $input attr-dict `:` type($input) `->` type($results)
+    $input attr-dict `:` type($input) `->` qualified(type($result))
   }];
 }
 

@@ -19,8 +19,7 @@ def Analog_WeightsType : Analog_Type<"Weights", "weights"> {
   // Parameters are what is stored in the type
   let parameters = (ins
     ArrayRefParameter<"int64_t", "Shape (e.g., [8,8])">:$shape,
-    "Type":$elementType,
-    "StringAttr":$layout
+    "Type":$elementType
   );
 
   let hasCustomAssemblyFormat = 1;

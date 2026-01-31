@@ -26,8 +26,7 @@ void TagNNLayerIndexPass::runOnOperation() {
   int64_t layer = 0;
 
   func.walk([&](arith::ConstantOp cst) {
-    auto tensorTy =
-        llvm::dyn_cast<RankedTensorType>(cst.getType());
+    auto tensorTy = llvm::dyn_cast<RankedTensorType>(cst.getType());
     if (!tensorTy)
       return;
 
