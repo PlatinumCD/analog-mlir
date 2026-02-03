@@ -1,5 +1,3 @@
-message(STATUS "ENTERING: ${CMAKE_CURRENT_SOURCE_DIR}")
-
 set(LLVM_TARGET_DEFINITIONS AnalogDialect.td)
 
 mlir_tablegen(AnalogBase.h.inc -gen-dialect-decls)

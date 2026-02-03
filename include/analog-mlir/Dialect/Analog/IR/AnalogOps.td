@@ -38,4 +38,30 @@ def Analog_WeightsFromConstOp
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// analog.tile.from_weights
+// Create analog tiles from weights 
+//===----------------------------------------------------------------------===//
+
+def Analog_TilesFromWeightsOp
+    : Analog_Op<"tile.from_weights"> {
+
+  let summary = "Materialize analog tiles from analog weights";
+
+  let arguments = (ins
+    Analog_WeightsType:$input,
+    I64Attr:$tile_rows,
+    I64Attr:$tile_cols,
+    I64Attr:$layer
+  );
+
+  let results = (outs
+    Analog_TilesType:$result
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `->` qualified(type($result))
+  }];
+}
+
 #endif // ANALOG_OPS_TD

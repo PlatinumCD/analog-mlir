@@ -1,7 +1,7 @@
-add_mlir_library(MLIRAnalogNNTransforms
+add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
-  TagNNLayerIndex.cpp
-  CleanupTransposeScaffolding.cpp
+  MaterializeWeightsFromConst.cpp
+  MaterializeTilesFromWeights.cpp
 
   DEPENDS
   MLIRFuncDialect
