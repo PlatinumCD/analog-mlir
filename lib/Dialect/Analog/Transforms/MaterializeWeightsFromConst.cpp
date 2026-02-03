@@ -51,7 +51,7 @@ void MaterializeWeightsFromConstPass::runOnOperation() {
       return;
     }
 
-    if (op->hasAttr("analog.weights.materialized")) {
+    if (op->hasAttr("layer")) {
       return;
     }
 
@@ -76,7 +76,7 @@ void MaterializeWeightsFromConstPass::runOnOperation() {
         layerAttr
     );
 
-    op->setAttr("analog.weights.materialized", builder.getUnitAttr());
+    op->setAttr("layer", layerAttr);
 
     layer_index++;
   });

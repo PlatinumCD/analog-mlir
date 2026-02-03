@@ -52,6 +52,8 @@ def Analog_TilesFromWeightsOp
     Analog_WeightsType:$input,
     I64Attr:$tile_rows,
     I64Attr:$tile_cols,
+    I64Attr:$tile_row_idx,
+    I64Attr:$tile_col_idx,
     I64Attr:$layer
   );
 
