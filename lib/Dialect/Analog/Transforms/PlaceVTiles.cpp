@@ -68,9 +68,9 @@ void PlaceVTilesPass::runOnOperation() {
     int64_t matrixRows = matrixTransposeShape[1];
     int64_t matrixCols = matrixTransposeShape[0];
 
-    auto tileShape = op.getTile();
-    int64_t tileRows = llvm::cast<mlir::IntegerAttr>(tileShape[0]).getInt();
-    int64_t tileCols = llvm::cast<mlir::IntegerAttr>(tileShape[1]).getInt();
+    auto tileShape = sliceTy.getTileShape();
+    int64_t tileRows = tileShape[0];
+    int64_t tileCols = tileShape[1];
 
     int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
     int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;

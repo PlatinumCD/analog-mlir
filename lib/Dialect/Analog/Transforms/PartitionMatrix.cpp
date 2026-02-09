@@ -64,14 +64,14 @@ void PartitionMatrixPass::runOnOperation() {
     auto tileGridTy = analog::TileGridType::get(
       builder.getContext(),
       numTiles,
+      {tileRows, tileCols},
       matrixTy
     );
 
     builder.create<analog::TilePartitionOp>(
       op.getLoc(),
       tileGridTy,
-      op.getResult(),
-      builder.getI64ArrayAttr({tileRows, tileCols})
+      op.getResult()
     );
   });
 }

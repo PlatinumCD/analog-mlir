@@ -55,8 +55,7 @@ def Analog_TilePartitionOp
   }];
 
   let arguments = (ins
-    Analog_MatrixType:$matrix,
-    I64ArrayAttr:$tile
+    Analog_MatrixType:$matrix
   );
 
   let results = (outs
@@ -134,8 +133,7 @@ def Analog_VTilePartitionOp
   }];
 
   let arguments = (ins
-    Analog_VectorType:$vector,
-    I64ArrayAttr:$tile
+    Analog_VectorType:$vector
   );
 
   let results = (outs

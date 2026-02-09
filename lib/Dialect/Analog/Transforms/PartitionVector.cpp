@@ -79,14 +79,14 @@ void PartitionVectorPass::runOnOperation() {
     auto vtileSliceTy = analog::VTileSliceType::get(
       builder.getContext(),
       numTiles,
+      {tileRows, tileCols},
       vectorTy
     );
 
     builder.create<analog::VTilePartitionOp>(
       op.getLoc(),
       vtileSliceTy,
-      op.getResult(),
-      builder.getI64ArrayAttr({tileRows, tileCols})
+      op.getResult()
     );
   });
 }
