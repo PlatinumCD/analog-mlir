@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/MaterializeWeightsFromConst.h"
+#include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
@@ -24,21 +24,19 @@ namespace mlir {
 namespace analog {
 
 // =====--------------------------------=====
-//   MaterializeWeightsFromConstPass - Pass
+//   MaterializeMatrixFromTensorPass - Pass
 // =====--------------------------------=====
 
-llvm::StringRef MaterializeWeightsFromConstPass::getArgument() const {
-  return "analog-materialize-weights";
+llvm::StringRef MaterializeMatrixFromTensorPass::getArgument() const {
+  return "analog-materialize-matrix";
 }
 
-llvm::StringRef MaterializeWeightsFromConstPass::getDescription() const {
-  return "Transform dense resources into analog weight types";
+llvm::StringRef MaterializeMatrixFromTensorPass::getDescription() const {
+  return "Transform dense resources into analog matrix types";
 }
 
-void MaterializeWeightsFromConstPass::runOnOperation() {
+void MaterializeMatrixFromTensorPass::runOnOperation() {
   auto func = getOperation();
-
-  uint64_t layer_index = 0;
 
   func.walk([&](arith::ConstantOp op) {
 
@@ -47,47 +45,30 @@ void MaterializeWeightsFromConstPass::runOnOperation() {
       return;
     }
 
-    if (!llvm::isa<DenseResourceElementsAttr>(op.getValue())) {
-      return;
-    }
-
-    if (op->hasAttr("layer")) {
-      return;
-    }
-
     OpBuilder builder(op);
-    
-    // Set insertion point
     builder.setInsertionPointAfter(op);
 
     // Build result type
-    auto weightsTy = analog::WeightsType::get(
+    auto matrixTy = analog::MatrixType::get(
         builder.getContext(),
         tensorTy.getShape(),
         tensorTy.getElementType()
     );
 
-    auto layerAttr = builder.getI64IntegerAttr(layer_index);
-
-    builder.create<analog::WeightsFromConstOp>(
+    builder.create<analog::MatrixFromTensorOp>(
         op.getLoc(),
-        weightsTy,
-        op.getResult(),
-        layerAttr
+        matrixTy,
+        op.getResult()
     );
-
-    op->setAttr("layer", layerAttr);
-
-    layer_index++;
   });
 }
 
-void MaterializeWeightsFromConstPass::getDependentDialects(DialectRegistry &registry) const {
+void MaterializeMatrixFromTensorPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
 
-std::unique_ptr<mlir::Pass> createMaterializeWeightsFromConstPass() {
-  return std::make_unique<MaterializeWeightsFromConstPass>();
+std::unique_ptr<mlir::Pass> createMaterializeMatrixFromTensorPass() {
+  return std::make_unique<MaterializeMatrixFromTensorPass>();
 }
 
 

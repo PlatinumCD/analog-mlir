@@ -2,6 +2,7 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
 #include <cstdint>
 
 #include "mlir/IR/Attributes.h"
@@ -30,11 +31,11 @@ void AnalogDialect::registerTypes()
 }
 
 //===----------------------------------------------------------------------===//
-// WeightsType - verify
+// MatrixType - verify
 //===----------------------------------------------------------------------===//
 
 mlir::LogicalResult
-mlir::analog::WeightsType::verify(
+mlir::analog::MatrixType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
@@ -46,17 +47,17 @@ mlir::analog::WeightsType::verify(
     return emitError() << "elementType must be a float type";
 
   if (shape.size() != 2)
-    return emitError() << "expected rank-2 weights, got rank " << shape.size();
+    return emitError() << "expected rank-2 matrix, got rank " << shape.size();
 
   return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
-// WeightsType - parseShapeAndElt
+// MatrixType - parseShapeAndElt
 //===----------------------------------------------------------------------===//
 
 mlir::ParseResult
-mlir::analog::WeightsType::parseShapeAndElt(
+mlir::analog::MatrixType::parseShapeAndElt(
     mlir::AsmParser &parser,
     llvm::SmallVector<int64_t> &shape,
     mlir::Type &elementType) {
@@ -83,11 +84,11 @@ mlir::analog::WeightsType::parseShapeAndElt(
 }
 
 //===----------------------------------------------------------------------===//
-// WeightsType - printShapeAndElt
+// MatrixType - printShapeAndElt
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::WeightsType::printShapeAndElt(
+mlir::analog::MatrixType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
@@ -99,11 +100,11 @@ mlir::analog::WeightsType::printShapeAndElt(
 }
 
 //===----------------------------------------------------------------------===//
-// WeightsType - parse
+// MatrixType - parse
 //===----------------------------------------------------------------------===//
 
 mlir::Type
-mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
+mlir::analog::MatrixType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
 
@@ -115,28 +116,24 @@ mlir::analog::WeightsType::parse(mlir::AsmParser &parser) {
 }
 
 //===----------------------------------------------------------------------===//
-// WeightsType - print
+// MatrixType - print
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::WeightsType::print(mlir::AsmPrinter &printer) const {
+mlir::analog::MatrixType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
 }
 
 
-
-
 //===----------------------------------------------------------------------===//
-// TileType - verify
+// VectorType - verify
 //===----------------------------------------------------------------------===//
 
 mlir::LogicalResult
-mlir::analog::TileType::verify(
+mlir::analog::VectorType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType,
-    int64_t stride,
-    int64_t base) {
+    mlir::Type elementType) {
 
   if (shape.empty())
     return emitError() << "shape must have at least 1 dimension";
@@ -145,17 +142,17 @@ mlir::analog::TileType::verify(
     return emitError() << "elementType must be a float type";
 
   if (shape.size() != 2)
-    return emitError() << "expected rank-2 weights, got rank " << shape.size();
+    return emitError() << "expected rank-2 matrix, got rank " << shape.size();
 
   return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
-// TileType - parseShapeAndElt
+// VectorType - parseShapeAndElt
 //===----------------------------------------------------------------------===//
 
 mlir::ParseResult
-mlir::analog::TileType::parseShapeAndElt(
+mlir::analog::VectorType::parseShapeAndElt(
     mlir::AsmParser &parser,
     llvm::SmallVector<int64_t> &shape,
     mlir::Type &elementType) {
@@ -182,11 +179,11 @@ mlir::analog::TileType::parseShapeAndElt(
 }
 
 //===----------------------------------------------------------------------===//
-// TileType - printShapeAndElt
+// VectorType - printShapeAndElt
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::TileType::printShapeAndElt(
+mlir::analog::VectorType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
@@ -198,44 +195,163 @@ mlir::analog::TileType::printShapeAndElt(
 }
 
 //===----------------------------------------------------------------------===//
-// TileType - parse
+// VectorType - parse
 //===----------------------------------------------------------------------===//
 
 mlir::Type
-mlir::analog::TileType::parse(mlir::AsmParser &parser) {
+mlir::analog::VectorType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
-  uint64_t stride;
-  uint64_t base;
 
-  // Parse 8x8xf32
+  // Parse 1x8xf32
   if (parseShapeAndElt(parser, shape, elementType))
     return Type();
 
-  // Expect: , stride = <int>
-  if (parser.parseComma() ||
-      parser.parseKeyword("stride") ||
-      parser.parseEqual() ||
-      parser.parseInteger(stride))
-    return Type();
-
-  // Expect: , base = <int>
-  if (parser.parseComma() ||
-      parser.parseKeyword("base") ||
-      parser.parseEqual() ||
-      parser.parseInteger(base))
-    return Type();
-
-  return get(parser.getContext(), shape, elementType, stride, base);
+  return get(parser.getContext(), shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
-// TileType - print
+// VectorType - print
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::TileType::print(mlir::AsmPrinter &printer) const {
+mlir::analog::VectorType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
-  printer << ", stride=" << getStride();
-  printer << ", base=" << getBase();
+}
+
+
+
+
+//===----------------------------------------------------------------------===//
+// TileGridType - verify
+//===----------------------------------------------------------------------===//
+
+llvm::LogicalResult
+mlir::analog::TileGridType::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    int64_t tile,
+    mlir::analog::MatrixType matrix) {
+
+  if (tile <= 0)
+    return emitError() << "tile size must be positive";
+
+  auto matrixShape = matrix.getShape();
+  if (matrixShape.size() != 2)
+    return emitError() << "matrix must be rank-2";
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// TileGridType - parse
+//===----------------------------------------------------------------------===//
+
+mlir::Type
+mlir::analog::TileGridType::parse(mlir::AsmParser &parser) {
+  int64_t tile;
+  mlir::Type matrixType;
+
+  if (parser.parseLess())
+    return Type();
+
+  if (parser.parseInteger(tile))
+    return Type();
+
+  if (parser.parseComma())
+    return Type();
+
+  if (parser.parseType(matrixType))
+    return Type();
+
+  if (parser.parseGreater())
+    return Type();
+
+  auto matrix = llvm::dyn_cast<mlir::analog::MatrixType>(matrixType);
+  if (!matrix) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "expected analog.matrix type");
+    return Type();
+  }
+
+  return get(parser.getContext(), tile, matrix);
+}
+
+//===----------------------------------------------------------------------===//
+// TileGridType - print
+//===----------------------------------------------------------------------===//
+
+void
+mlir::analog::TileGridType::print(mlir::AsmPrinter &printer) const {
+  printer << "tiles=" << getTiles() << ", matrix=";
+  printer.printType(getMatrix());
+}
+
+
+
+//===----------------------------------------------------------------------===//
+// VTileSliceType - verify
+//===----------------------------------------------------------------------===//
+
+llvm::LogicalResult
+mlir::analog::VTileSliceType::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    int64_t tile,
+    mlir::analog::VectorType vector) {
+
+  if (tile <= 0)
+    return emitError() << "tile size must be positive";
+
+  // Vector must be encoded as 1xN
+  auto vecShape = vector.getShape();
+  if (vecShape.size() != 2)
+    return emitError() << "vector must be rank-2 (1xN)";
+
+  if (vecShape[0] != 1)
+    return emitError() << "vector must have leading dimension 1";
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// VTileSliceType - parse
+//===----------------------------------------------------------------------===//
+
+mlir::Type
+mlir::analog::VTileSliceType::parse(mlir::AsmParser &parser) {
+  int64_t tile;
+  mlir::Type vectorType;
+
+  if (parser.parseLess())
+    return Type();
+
+  if (parser.parseInteger(tile))
+    return Type();
+
+  if (parser.parseComma())
+    return Type();
+
+  if (parser.parseType(vectorType))
+    return Type();
+
+  if (parser.parseGreater())
+    return Type();
+
+  auto vector = llvm::dyn_cast<mlir::analog::VectorType>(vectorType);
+  if (!vector) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "expected analog.vector type");
+    return Type();
+  }
+
+  return get(parser.getContext(), tile, vector);
+}
+
+//===----------------------------------------------------------------------===//
+// VTileSliceType - print
+//===----------------------------------------------------------------------===//
+
+void
+mlir::analog::VTileSliceType::print(mlir::AsmPrinter &printer) const {
+  printer << "tiles=" << getTiles() << ", vector=";
+  printer.printType(getVector());
 }

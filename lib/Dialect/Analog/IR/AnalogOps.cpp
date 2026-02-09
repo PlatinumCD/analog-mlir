@@ -4,9 +4,9 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectImplementation.h"
-
-#define DEBUG_TYPE "analog-ops"
+#include "llvm/Support/Casting.h"
 
 using namespace mlir;
 using namespace mlir::analog;
@@ -21,4 +21,3 @@ void AnalogDialect::registerOps()
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.cpp.inc"
         >();
 }
-

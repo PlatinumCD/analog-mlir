@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_TILES_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_TILES_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PARTITION_MATRIX_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PARTITION_MATRIX_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -15,15 +15,15 @@
 namespace mlir {
 namespace analog {
 
-struct MaterializeTilesFromWeightsPass
-    : public mlir::PassWrapper<MaterializeTilesFromWeightsPass,
+struct PartitionMatrixPass
+    : public mlir::PassWrapper<PartitionMatrixPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MaterializeTilesFromWeightsPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PartitionMatrixPass)
 
   // ---- REQUIRED ----
-  MaterializeTilesFromWeightsPass() = default;
-  MaterializeTilesFromWeightsPass(
-      const MaterializeTilesFromWeightsPass &other)
+  PartitionMatrixPass() = default;
+  PartitionMatrixPass(
+      const PartitionMatrixPass &other)
       : PassWrapper(other) {}
 
   Option<int64_t> tile_rows {*this, "tile-rows",
@@ -43,7 +43,7 @@ struct MaterializeTilesFromWeightsPass
 };
 
 
-std::unique_ptr<mlir::Pass> createMaterializeTilesFromWeightsPass();
+std::unique_ptr<mlir::Pass> createPartitionMatrixPass();
 
 } // namespace analog
 } // namespace mlir

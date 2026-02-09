@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_WEIGHTS_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_WEIGHTS_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_VECTOR_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_MATERIALIZE_VECTOR_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -13,10 +13,10 @@
 namespace mlir {
 namespace analog {
 
-struct MaterializeWeightsFromConstPass
-    : public mlir::PassWrapper<MaterializeWeightsFromConstPass,
+struct MaterializeVectorFromTensorPass
+    : public mlir::PassWrapper<MaterializeVectorFromTensorPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MaterializeWeightsFromConstPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MaterializeVectorFromTensorPass)
 
   llvm::StringRef getArgument() const override;
   llvm::StringRef getDescription() const override;
@@ -25,7 +25,7 @@ struct MaterializeWeightsFromConstPass
 };
 
 
-std::unique_ptr<mlir::Pass> createMaterializeWeightsFromConstPass();
+std::unique_ptr<mlir::Pass> createMaterializeVectorFromTensorPass();
 
 } // namespace analog
 } // namespace mlir

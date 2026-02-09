@@ -1,7 +1,11 @@
 add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
-  MaterializeWeightsFromConst.cpp
-  MaterializeTilesFromWeights.cpp
+  MaterializeMatrixFromTensor.cpp
+  MaterializeVectorFromTensor.cpp
+  PartitionMatrix.cpp
+  PartitionVector.cpp
+  PlaceTiles.cpp
+  PlaceVTiles.cpp
   IntroduceAnalogOps.cpp
 
   DEPENDS

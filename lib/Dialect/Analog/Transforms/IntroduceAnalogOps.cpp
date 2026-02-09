@@ -12,6 +12,8 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/DialectRegistry.h>
@@ -43,6 +45,21 @@ void IntroduceAnalogOpsPass::runOnOperation() {
 
     llvm::errs() << op << "\n";
 
+    // Get the transpose operation
+    Value matmulRhs = op.getInputs()[1];
+    auto transposeOp = matmulRhs.getDefiningOp<mlir::linalg::TransposeOp>();
+    if (!transposeOp) {
+      return;
+    }
+    llvm::errs() << transposeOp << "\n";
+
+
+    Value transposeDest = transposeOp.getInit();
+    auto emptyOp = transposeDest.getDefiningOp<mlir::tensor::EmptyOp>();
+    if (!emptyOp) {
+      return;
+    }
+    llvm::errs() << *emptyOp << "\n";
   
   });
 }
