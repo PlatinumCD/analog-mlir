@@ -44,6 +44,8 @@ struct PartitionVectorPass
 
 
 std::unique_ptr<mlir::Pass> createPartitionVectorPass();
+std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t tileRows, int64_t tileCols);
+
 
 } // namespace analog
 } // namespace mlir

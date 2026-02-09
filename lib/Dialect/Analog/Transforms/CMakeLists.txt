@@ -6,7 +6,10 @@ add_mlir_library(MLIRAnalogTransforms
   PartitionVector.cpp
   PlaceTiles.cpp
   PlaceVTiles.cpp
+
   IntroduceAnalogOps.cpp
+
+  GroupedPasses.cpp
 
   DEPENDS
   MLIRFuncDialect

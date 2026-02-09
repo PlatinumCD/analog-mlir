@@ -84,6 +84,12 @@ std::unique_ptr<mlir::Pass> createPartitionMatrixPass() {
   return std::make_unique<PartitionMatrixPass>();
 }
 
+std::unique_ptr<mlir::Pass> createPartitionMatrixPass(int64_t tileRows, int64_t tileCols) {
+  auto pass = std::make_unique<PartitionMatrixPass>();
+  pass->tile_rows = tileRows;
+  pass->tile_cols = tileCols;
+  return pass;
+}
 
 } // namespace analog
 } // namespace mlir
