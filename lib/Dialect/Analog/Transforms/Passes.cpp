@@ -8,8 +8,9 @@
 
 #include "analog-mlir/Dialect/Analog/Transforms/GroupedPasses.h"
 
+#include "analog-mlir/Dialect/Analog/Transforms/ExecuteTiles.h"
+#include "analog-mlir/Dialect/Analog/Transforms/CombineTileResults.h"
 
-#include "analog-mlir/Dialect/Analog/Transforms/IntroduceAnalogOps.h"
 #include <mlir/Pass/PassRegistry.h>
 
 
@@ -25,7 +26,8 @@ void registerAnalogPasses() {
   PassRegistration<PartitionVectorPass>();
   PassRegistration<PlaceTilesPass>();
   PassRegistration<PlaceVTilesPass>();
-  PassRegistration<IntroduceAnalogOpsPass>();
+  PassRegistration<ExecuteTilesPass>();
+  PassRegistration<CombineTileResultsPass>();
   
   // Pipelines
   registerMaterializePipeline();

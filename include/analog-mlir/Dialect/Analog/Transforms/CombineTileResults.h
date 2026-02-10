@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_INTRODUCE_ANALOG_OPS_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_INTRODUCE_ANALOG_OPS_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_COMBINE_TILE_RESULTS_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_COMBINE_TILE_RESULTS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -15,15 +15,15 @@
 namespace mlir {
 namespace analog {
 
-struct IntroduceAnalogOpsPass
-    : public mlir::PassWrapper<IntroduceAnalogOpsPass,
+struct CombineTileResultsPass
+    : public mlir::PassWrapper<CombineTileResultsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(IntroduceAnalogOpsPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CombineTileResultsPass)
 
   // ---- REQUIRED ----
-  IntroduceAnalogOpsPass() = default;
-  IntroduceAnalogOpsPass(
-      const IntroduceAnalogOpsPass &other)
+  CombineTileResultsPass() = default;
+  CombineTileResultsPass(
+      const CombineTileResultsPass &other)
       : PassWrapper(other) {}
 
   llvm::StringRef getArgument() const override;
@@ -33,7 +33,7 @@ struct IntroduceAnalogOpsPass
 };
 
 
-std::unique_ptr<mlir::Pass> createIntroduceAnalogOpsPass();
+std::unique_ptr<mlir::Pass> createCombineTileResultsPass();
 
 } // namespace analog
 } // namespace mlir

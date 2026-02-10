@@ -56,14 +56,13 @@ void PartitionMatrixPass::runOnOperation() {
 
     int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
     int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;
-    int64_t numTiles = numTileRows * numTileCols;
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
 
     auto tileGridTy = analog::TileGridType::get(
       builder.getContext(),
-      numTiles,
+      {numTileRows, numTileCols},
       {tileRows, tileCols},
       matrixTy
     );

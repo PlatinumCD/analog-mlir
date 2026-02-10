@@ -84,11 +84,13 @@ def Analog_TilePlaceOp
 
   let arguments = (ins
     Analog_TileGridType:$input,
+    Index:$rowIndex,
+    Index:$colIndex,
     Variadic<Index>:$indices
   );
 
   let assemblyFormat = [{
-    $input `[` $indices `]`
+    $input `[` $rowIndex `,` $colIndex `]` `,` `tile` `[` $indices `]`
     attr-dict
     `:` qualified(type($input)) 
   }];
@@ -159,13 +161,60 @@ def Analog_VTilePlaceOp
 
   let arguments = (ins
     Analog_VTileSliceType:$input,
+    Index:$sliceIndex,
     Variadic<Index>:$indices
   );
 
   let assemblyFormat = [{
-    $input `[` $indices `]`
+    $input `[` $sliceIndex `]` `,` `tile` `[` $indices `]`
     attr-dict
     `:` qualified(type($input)) 
+  }];
+}
+
+
+//===----------------------------------------------------------------------===//
+// analog.tile.execute
+// Execute a tile in the accelerator
+//===----------------------------------------------------------------------===//
+
+def Analog_TileExecuteOp
+  : Analog_Op<"tile.execute"> {
+
+  let summary = "Execute a tile in the accelerator";
+
+  let arguments = (ins
+    Variadic<Index>:$indices
+  );
+
+  let results = (outs
+    Analog_TileGridType:$grid
+  );
+
+  let assemblyFormat = [{
+    `tile` `[` $indices `]` attr-dict `:` qualified(type($grid)) 
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.tile.store
+// store the results of a tile in the accelerator into a memory buffer
+//===----------------------------------------------------------------------===//
+
+def Analog_TileStoreOp
+  : Analog_Op<"tile.store"> {
+
+  let summary = "Store the results of a tile into a memory buffer";
+
+  let arguments = (ins
+    Analog_TileGridType:$grid,
+    AnyMemRef:$dest,
+    Variadic<Index>:$indices
+  );
+
+  let assemblyFormat = [{
+    $grid `,` $dest `[` $indices `]`
+    attr-dict `:` qualified(type($grid)) `,` qualified(type($dest))
   }];
 }
 

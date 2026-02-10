@@ -48,17 +48,9 @@ void PlaceTilesPass::runOnOperation() {
       return;
     }
 
-    auto matrixTy = gridTy.getMatrix(); 
-    auto matrixShape = matrixTy.getShape();
-    int64_t matrixRows = matrixShape[0];
-    int64_t matrixCols = matrixShape[1];
-
-    auto tileShape = gridTy.getTileShape();
-    int64_t tileRows = tileShape[0];
-    int64_t tileCols = tileShape[1];
-
-    int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
-    int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;
+    auto gridShape = gridTy.getTileShape();
+    int64_t numTileRows = gridShape[0]; 
+    int64_t numTileCols = gridShape[1]; 
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
@@ -80,6 +72,8 @@ void PlaceTilesPass::runOnOperation() {
             b2.create<analog::TilePlaceOp>(
               loc,
               grid,
+              tr,
+              tc,
               ValueRange{tr, tc}
             );
 

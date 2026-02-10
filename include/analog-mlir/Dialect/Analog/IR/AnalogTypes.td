@@ -90,26 +90,13 @@ def Analog_TileGridType : Analog_Type<"TileGrid", "tile.grid"> {
   }];
 
   let parameters = (ins
-    "int64_t":$tiles,
+    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$gridShape,
     ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$tileShape,
     Analog_MatrixType:$matrix
   );
 
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
-
-  let extraClassDeclaration = [{
-    static ::mlir::ParseResult
-    parseShapeAndElt(::mlir::AsmParser &parser,
-                     ::llvm::SmallVector<int64_t> &shape,
-                     ::mlir::Type &elementType);
-
-    static void
-    printShapeAndElt(::mlir::AsmPrinter &printer,
-                     ::llvm::ArrayRef<int64_t> shape,
-                     ::mlir::Type elementType);
-
-  }];
 }
 
 
@@ -126,7 +113,7 @@ def Analog_VTileSliceType : Analog_Type<"VTileSlice", "vtile.slice"> {
   }];
 
   let parameters = (ins
-    "int64_t":$tiles,
+    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$gridShape,
     ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$tileShape,
     Analog_VectorType:$vector
   );

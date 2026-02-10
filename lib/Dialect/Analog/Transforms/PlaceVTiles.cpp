@@ -47,7 +47,7 @@ void PlaceVTilesPass::runOnOperation() {
     if (!sliceTy) {
       return;
     }
-
+/*
     Operation *next = op->getNextNode();
     if (!next) {
       return;
@@ -71,9 +71,10 @@ void PlaceVTilesPass::runOnOperation() {
     auto tileShape = sliceTy.getTileShape();
     int64_t tileRows = tileShape[0];
     int64_t tileCols = tileShape[1];
-
-    int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
-    int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;
+*/
+    auto gridShape = sliceTy.getGridShape();
+    int64_t numTileRows = gridShape[0]; 
+    int64_t numTileCols = gridShape[1];
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
@@ -97,6 +98,7 @@ void PlaceVTilesPass::runOnOperation() {
             b2.create<analog::VTilePlaceOp>(
               loc,
               slice,
+              tc,
               ValueRange{tr, tc}
             );
 

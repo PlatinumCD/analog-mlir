@@ -7,7 +7,8 @@ add_mlir_library(MLIRAnalogTransforms
   PlaceTiles.cpp
   PlaceVTiles.cpp
 
-  IntroduceAnalogOps.cpp
+  ExecuteTiles.cpp
+  CombineTileResults.cpp
 
   GroupedPasses.cpp
 
