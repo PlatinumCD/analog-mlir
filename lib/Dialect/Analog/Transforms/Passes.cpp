@@ -10,6 +10,7 @@
 
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteTiles.h"
 #include "analog-mlir/Dialect/Analog/Transforms/CombineTileResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
 
 #include <mlir/Pass/PassRegistry.h>
 
@@ -28,6 +29,7 @@ void registerAnalogPasses() {
   PassRegistration<PlaceVTilesPass>();
   PassRegistration<ExecuteTilesPass>();
   PassRegistration<CombineTileResultsPass>();
+  PassRegistration<ReplaceMatmulPass>();
   
   // Pipelines
   registerMaterializePipeline();

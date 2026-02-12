@@ -9,6 +9,7 @@ add_mlir_library(MLIRAnalogTransforms
 
   ExecuteTiles.cpp
   CombineTileResults.cpp
+  ReplaceMatmul.cpp
 
   GroupedPasses.cpp
 

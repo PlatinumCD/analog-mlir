@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
   registry.insert<analog::AnalogDialect>();
 
   mlir::analog::registerAnalogPasses();
-//  registerAllPasses();
+  registerAllPasses();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Analog MLIR modular optimizer\n", registry));

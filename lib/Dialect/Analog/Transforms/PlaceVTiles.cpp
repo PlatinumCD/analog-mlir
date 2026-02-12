@@ -47,31 +47,7 @@ void PlaceVTilesPass::runOnOperation() {
     if (!sliceTy) {
       return;
     }
-/*
-    Operation *next = op->getNextNode();
-    if (!next) {
-      return;
-    }
 
-    auto matmulOp = llvm::dyn_cast<linalg::MatmulOp>(next);
-    if (!matmulOp) {
-      return;
-    }
-
-    Value matrixTransposeInput = matmulOp.getInputs()[1]; 
-    auto matrixTansposeInputTy = llvm::dyn_cast<RankedTensorType>(matrixTransposeInput.getType());
-    if (!matrixTansposeInputTy) {
-      return;
-    }
-
-    auto matrixTransposeShape = matrixTansposeInputTy.getShape();
-    int64_t matrixRows = matrixTransposeShape[1];
-    int64_t matrixCols = matrixTransposeShape[0];
-
-    auto tileShape = sliceTy.getTileShape();
-    int64_t tileRows = tileShape[0];
-    int64_t tileCols = tileShape[1];
-*/
     auto gridShape = sliceTy.getGridShape();
     int64_t numTileRows = gridShape[0]; 
     int64_t numTileCols = gridShape[1];

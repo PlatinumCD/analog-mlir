@@ -48,7 +48,7 @@ void PlaceTilesPass::runOnOperation() {
       return;
     }
 
-    auto gridShape = gridTy.getTileShape();
+    auto gridShape = gridTy.getGridShape();
     int64_t numTileRows = gridShape[0]; 
     int64_t numTileCols = gridShape[1]; 
 

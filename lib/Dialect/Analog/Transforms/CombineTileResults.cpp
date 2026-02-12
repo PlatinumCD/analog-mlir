@@ -79,10 +79,6 @@ void CombineTileResultsPass::runOnOperation() {
     int64_t gridRows = gridShape[0];
     int64_t gridCols = gridShape[1];
 
-    auto tileShape = gridTy.getTileShape();
-    int64_t tileRows = tileShape[0];
-    int64_t tileCols = tileShape[1];
-
     // Memref data
     auto memrefVal = memrefValueQueue.front();
     memrefValueQueue.pop_front();
@@ -93,8 +89,6 @@ void CombineTileResultsPass::runOnOperation() {
     }
 
     auto memrefShape = memrefTy.getShape();
-    int64_t memTileRows = memrefShape[0];
-    int64_t memTileCols = memrefShape[1];
     int64_t memTileLane = memrefShape[2];
 
     // ================================================================
@@ -111,7 +105,6 @@ void CombineTileResultsPass::runOnOperation() {
     // ================================================================
     // Constants
     // ================================================================
-    auto indexTy = builder.getIndexType();
     auto f32Ty   = builder.getF32Type();
 
     Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
@@ -222,8 +215,7 @@ void CombineTileResultsPass::runOnOperation() {
     // Materialize tensor result
     // ================================================================
     auto resultTy = RankedTensorType::get({1, outCols}, f32Ty);
-    Value result = builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
-
+    builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
   });
 }
 
