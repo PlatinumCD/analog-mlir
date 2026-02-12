@@ -3,127 +3,66 @@
 **analog-mlir** is an experimental MLIR-based compiler infrastructure for targeting **analog compute-in-memory (CIM)** architectures.
 It extends MLIR with an `analog` dialect and a sequence of transformation passes that progressively lower high-level tensor constants and linear algebra into representations suitable for analog tile arrays.
 
-The project focuses on **explicitly modeling analog weights, tiles, and execution structure in IR**, enabling systematic hardware–software co-design rather than ad-hoc backend lowering.
+# Analog IR Overview
+
+## 1. Types
+
+| Type | Mnemonic | Represents | Notes |
+|---|---|---|---|
+| `Analog_MatrixType` | `matrix` | Logical analog matrix storage | Owns full matrix shape |
+| `Analog_VectorType` | `vector` | Logical analog vector storage | 1D container |
+| `Analog_TileGridType` | `tile.grid` | 2D grid view over matrix tiles | View derived from matrix |
+| `Analog_VTileSliceType` | `vtile.slice` | 1D slice view over vector tiles | View derived from vector |
 
 ---
 
-## Project Goals
+## 2. Operations
 
-* Make analog compute **explicit in the IR**, not implicit in backend codegen
-* Separate **logical model structure** from **physical analog layout**
-* Serve as a research platform for analog accelerator compilation
-
----
-
-## High-Level Architecture
-
-The compiler pipeline is organized as a sequence of **semantic refinements**:
-
-```
-Dense tensor constants
-        ↓
-!analog.weights        (logical, layer-aware weights)
-        ↓
-!analog.tile           (physical tile layout)
-        ↓
-Analog execution ops   (future work)
-```
-
-Each step introduces additional hardware-relevant structure while preserving analyzability and transformation legality.
+| Operation | Inputs | Outputs | Effect |
+|---|---|---|---|
+| `analog.matrix.from_tensor` | `tensor` | `Analog_MatrixType` | Materialize analog matrix storage |
+| `analog.tile.partition` | `Analog_MatrixType` | `Analog_TileGridType` | Declare matrix as tiled grid |
+| `analog.tile.place` | `TileGrid`, `rowIndex`, `colIndex`, `indices…` | — | Place a single tile into accelerator |
+| `analog.vector.from_tensor` | `tensor` | `Analog_VectorType` | Materialize analog vector storage |
+| `analog.vtile.partition` | `Analog_VectorType` | `Analog_VTileSliceType` | Declare vector as vtile slices |
+| `analog.vtile.place` | `VTileSlice`, `sliceIndex`, `indices…` | — | Place a single vtile |
+| `analog.tile.execute` | `indices…` | `Analog_TileGridType` | Execute placed tiles |
+| `analog.tile.store` | `TileGrid`, `memref`, `indices…` | — | Store accelerator results |
 
 ---
 
-## The `analog` Dialect
+## 3. Conceptual Dataflow
 
-The `analog` dialect introduces first-class IR constructs for analog compute:
-
-### Types
-
-* `!analog.weights<shape x element-type>`
-
-  * Represents a logical weight matrix intended for analog execution
-  * Carries layer identity and separates weights from generic tensors
-
-* `!analog.tile<shape x element-type, stride, base>`
-
-  * Represents a physically realizable analog tile
-  * Encodes layout information needed for array mapping
-
-### Operations
-
-* `analog.weights_from_const`
-
-  * Materializes analog weights from dense constant tensors
-
-* `analog.tiles_from_weights`
-
-  * Converts logical weights into tile-level representations
-
-These ops deliberately **do not perform computation**; they model *data placement and structure*.
+| Stage | Matrix Path | Vector Path |
+|---|---|---|
+| Materialize | `matrix.from_tensor` | `vector.from_tensor` |
+| Partition | `tile.partition → TileGridType` | `vtile.partition → VTileSliceType` |
+| Placement | `tile.place (row, col)` | `vtile.place (slice)` |
+| Execute | `tile.execute` | *(implicit via tile.execute)* |
+| Store | `tile.store` | *(folded into combine)* |
 
 ---
 
-## Transformation Passes
+## 4. Passes
 
-### `MaterializeWeightsFromConstPass`
-
-**Argument:** `-analog-materialize-weights`
-
-* Identifies `arith.constant` operations backed by `DenseResourceElementsAttr`
-* Replaces implicit constants with explicit `!analog.weights`
-* Assigns a monotonically increasing layer index
-* Annotates constants to prevent duplicate materialization
-
-This pass establishes **analog-aware ownership of model parameters**.
-
----
-
-### `MaterializeTilesFromWeightsPass`
-
-**Argument:** `-analog-materialize-tiles`
-
-* Consumes `analog.weights_from_const` operations
-* Produces `!analog.tile` values via `analog.tiles_from_weights`
-* Uses configurable tile geometry (`tile_rows`, `tile_cols`)
-* Currently handles the single-tile case explicitly
-* Prepares weights for physical array mapping
-
-This pass bridges **logical weights** and **physical analog layout**.
+| Pass | Purpose | Operates On |
+|---|---|---|
+| `MaterializeMatrixFromTensorPass` | Tensor → analog matrix | Tensor constants |
+| `MaterializeVectorFromTensorPass` | Tensor → analog vector | Tensor constants |
+| `PartitionMatrixPass` | Matrix → tile grid | `Analog_MatrixType` |
+| `PartitionVectorPass` | Vector → vtile slice | `Analog_VectorType` |
+| `PlaceTilesPass` | TileGrid → placed tiles | `Analog_TileGridType` |
+| `PlaceVTilesPass` | VTileSlice → placed vtiles | `Analog_VTileSliceType` |
+| `ExecuteTilesPass` | Issue accelerator execution | Placed tiles |
+| `CombineTileResultsPass` | Reduce / writeback results | Tile outputs |
 
 ---
 
-## Build Instructions
+## 5. Pipelines
 
-### Prerequisites
+| Pipeline | Contains |
+|---|---|
+| `MaterializePipeline` | Matrix + vector materialization |
+| `PartitionPipeline` | Matrix and vector partitioning |
+| `PlacePipeline` | Placement and execution prep |
 
-* LLVM + MLIR (built from source)
-* CMake ≥ 3.22
-* Ninja (recommended)
-
-### Build
-
-```bash
-mkdir -p build && cd build
-cmake -G Ninja .. \
-  -DLLVM_DIR=/path/to/llvm/lib/cmake/llvm \
-  -DMLIR_DIR=/path/to/llvm/lib/cmake/mlir
-ninja
-```
-
-The primary tool is:
-
-```bash
-build/bin/analog-mlir-opt
-```
-
----
-
-## Example Usage
-
-```bash
-analog-mlir-opt input.mlir \
-  -analog-materialize-weights \
-  -analog-materialize-tiles="tile-rows=32 tile-cols=32"
-```
-
-This will progressively rewrite dense tensor constants into analog-aware representations.
