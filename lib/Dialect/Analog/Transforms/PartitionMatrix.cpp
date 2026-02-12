@@ -33,7 +33,7 @@ llvm::StringRef PartitionMatrixPass::getArgument() const {
 }
 
 llvm::StringRef PartitionMatrixPass::getDescription() const {
-  return "TODO";
+  return "Partition analog matrices into tile-grid views using configurable tile dimensions";
 }
 
 void PartitionMatrixPass::runOnOperation() {

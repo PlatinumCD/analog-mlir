@@ -34,7 +34,7 @@ llvm::StringRef PlaceVTilesPass::getArgument() const {
 }
 
 llvm::StringRef PlaceVTilesPass::getDescription() const {
-  return "TODO";
+  return "Generate vtile placement loops that emit analog.vtile.place for each vector tile coordinate";
 }
 
 void PlaceVTilesPass::runOnOperation() {

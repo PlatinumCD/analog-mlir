@@ -12,6 +12,7 @@ get_property(MLIR_EXTENSION_LIBS  GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
 target_link_libraries(analog-mlir-opt PRIVATE
   MLIRAnalogTransforms
+  MLIRAnalogConversion
 
   ${MLIR_DIALECT_LIBS}
   ${MLIR_CONVERSION_LIBS}

@@ -215,7 +215,8 @@ void CombineTileResultsPass::runOnOperation() {
     // Materialize tensor result
     // ================================================================
     auto resultTy = RankedTensorType::get({1, outCols}, f32Ty);
-    builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
+    auto toTensor = builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
+    toTensor->setAttr("restrict", builder.getUnitAttr());
   });
 }
 

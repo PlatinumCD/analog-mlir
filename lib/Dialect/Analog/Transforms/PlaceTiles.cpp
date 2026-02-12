@@ -34,7 +34,7 @@ llvm::StringRef PlaceTilesPass::getArgument() const {
 }
 
 llvm::StringRef PlaceTilesPass::getDescription() const {
-  return "TODO";
+  return "Generate tile placement loops that emit analog.tile.place for each tile-grid coordinate";
 }
 
 void PlaceTilesPass::runOnOperation() {

@@ -33,7 +33,7 @@ llvm::StringRef PartitionVectorPass::getArgument() const {
 }
 
 llvm::StringRef PartitionVectorPass::getDescription() const {
-  return "TODO";
+  return "Partition analog vectors into vtile-slice views derived from tiling geometry";
 }
 
 void PartitionVectorPass::runOnOperation() {
