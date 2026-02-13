@@ -33,7 +33,7 @@ llvm::StringRef PartitionMatrixPass::getArgument() const {
 }
 
 llvm::StringRef PartitionMatrixPass::getDescription() const {
-  return "Partition analog matrices into tile-grid views using configurable tile dimensions";
+  return "Partition analog matrices into array-grid views using configurable array dimensions";
 }
 
 void PartitionMatrixPass::runOnOperation() {
@@ -47,29 +47,29 @@ void PartitionMatrixPass::runOnOperation() {
       return;
     }
 
-    int64_t tileRows   = tile_rows;
-    int64_t tileCols   = tile_cols;
+    int64_t arrayRows   = array_rows;
+    int64_t arrayCols   = array_cols;
 
     auto matrixShape = matrixTy.getShape();
     int64_t matrixRows = matrixShape[0];
     int64_t matrixCols = matrixShape[1];
 
-    int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
-    int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;
+    int64_t numArrayRows = (matrixRows + arrayRows - 1) / arrayRows;
+    int64_t numArrayCols = (matrixCols + arrayCols - 1) / arrayCols;
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
 
-    auto tileGridTy = analog::TileGridType::get(
+    auto arrayGridTy = analog::MatrixGridType::get(
       builder.getContext(),
-      {numTileRows, numTileCols},
-      {tileRows, tileCols},
+      {numArrayRows, numArrayCols},
+      {arrayRows, arrayCols},
       matrixTy
     );
 
-    builder.create<analog::TilePartitionOp>(
+    builder.create<analog::MatrixPartitionOp>(
       op.getLoc(),
-      tileGridTy,
+      arrayGridTy,
       op.getResult()
     );
   });
@@ -83,10 +83,10 @@ std::unique_ptr<mlir::Pass> createPartitionMatrixPass() {
   return std::make_unique<PartitionMatrixPass>();
 }
 
-std::unique_ptr<mlir::Pass> createPartitionMatrixPass(int64_t tileRows, int64_t tileCols) {
+std::unique_ptr<mlir::Pass> createPartitionMatrixPass(int64_t arrayRows, int64_t arrayCols) {
   auto pass = std::make_unique<PartitionMatrixPass>();
-  pass->tile_rows = tileRows;
-  pass->tile_cols = tileCols;
+  pass->array_rows = arrayRows;
+  pass->array_cols = arrayCols;
   return pass;
 }
 

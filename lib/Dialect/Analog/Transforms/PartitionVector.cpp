@@ -33,7 +33,7 @@ llvm::StringRef PartitionVectorPass::getArgument() const {
 }
 
 llvm::StringRef PartitionVectorPass::getDescription() const {
-  return "Partition analog vectors into vtile-slice views derived from tiling geometry";
+  return "Partition analog vectors into varray-slice views derived from tiling geometry";
 }
 
 void PartitionVectorPass::runOnOperation() {
@@ -46,8 +46,8 @@ void PartitionVectorPass::runOnOperation() {
       return;
     }
 
-    int64_t tileRows = tile_rows;
-    int64_t tileCols = tile_cols;
+    int64_t arrayRows = array_rows;
+    int64_t arrayCols = array_cols;
 
     Operation *next = op->getNextNode();
     if (!next) {
@@ -69,22 +69,22 @@ void PartitionVectorPass::runOnOperation() {
     int64_t matrixRows = matrixTransposeShape[1];
     int64_t matrixCols = matrixTransposeShape[0];
 
-    int64_t numTileRows = (matrixRows + tileRows - 1) / tileRows;
-    int64_t numTileCols = (matrixCols + tileCols - 1) / tileCols;
+    int64_t numArrayRows = (matrixRows + arrayRows - 1) / arrayRows;
+    int64_t numArrayCols = (matrixCols + arrayCols - 1) / arrayCols;
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
 
-    auto vtileSliceTy = analog::VTileSliceType::get(
+    auto varraySliceTy = analog::VectorSliceType::get(
       builder.getContext(),
-      {numTileRows, numTileCols},
-      {tileRows, tileCols},
+      {numArrayRows, numArrayCols},
+      {arrayRows, arrayCols},
       vectorTy
     );
 
-    builder.create<analog::VTilePartitionOp>(
+    builder.create<analog::VectorPartitionOp>(
       op.getLoc(),
-      vtileSliceTy,
+      varraySliceTy,
       op.getResult()
     );
   });
@@ -98,10 +98,10 @@ std::unique_ptr<mlir::Pass> createPartitionVectorPass() {
   return std::make_unique<PartitionVectorPass>();
 }
 
-std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t tileRows, int64_t tileCols) {
+std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t arrayRows, int64_t arrayCols) {
   auto pass = std::make_unique<PartitionVectorPass>();
-  pass->tile_rows = tileRows;
-  pass->tile_cols = tileCols;
+  pass->array_rows = arrayRows;
+  pass->array_cols = arrayCols;
   return pass;
 }
 

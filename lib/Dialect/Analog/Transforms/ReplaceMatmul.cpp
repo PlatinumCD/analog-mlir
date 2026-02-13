@@ -44,7 +44,7 @@ llvm::StringRef ReplaceMatmulPass::getDescription() const {
 void ReplaceMatmulPass::runOnOperation() {
   auto func = getOperation();
 
-  // Find tile partition
+  // Find array partition
   func.walk([&](linalg::MatmulOp op) {
     Operation *prev = op->getPrevNode();
     if (!prev)

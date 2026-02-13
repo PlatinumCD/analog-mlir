@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/CombineTileResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/CombineArrayResults.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
@@ -30,27 +30,27 @@ namespace mlir {
 namespace analog {
 
 // =====--------------------------------=====
-//   CombineTileResultsPass - Pass
+//   CombineArrayResultsPass - Pass
 // =====--------------------------------=====
 
-llvm::StringRef CombineTileResultsPass::getArgument() const {
-  return "analog-combine-tile-results";
+llvm::StringRef CombineArrayResultsPass::getArgument() const {
+  return "analog-combine-array-results";
 }
 
-llvm::StringRef CombineTileResultsPass::getDescription() const {
-  return "Insert CombineTileResults ops";
+llvm::StringRef CombineArrayResultsPass::getDescription() const {
+  return "Insert CombineArrayResults ops";
 }
 
-void CombineTileResultsPass::runOnOperation() {
+void CombineArrayResultsPass::runOnOperation() {
   auto func = getOperation();
 
-  std::deque<analog::TileGridType> gridQueue;
+  std::deque<analog::MatrixGridType> gridQueue;
   std::deque<mlir::Value> memrefValueQueue;
 
-  // Find tile partition
-  func.walk([&](analog::TilePartitionOp op) {
+  // Find array partition
+  func.walk([&](analog::MatrixPartitionOp op) {
     auto grid = op.getResult();
-    auto gridTy = llvm::dyn_cast<analog::TileGridType>(grid.getType());
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
     if (!gridTy) {
       return;
     }
@@ -62,6 +62,7 @@ void CombineTileResultsPass::runOnOperation() {
     if (op->getAttr("analog-alloc-id")) {
       auto ref = op.getResult();
       memrefValueQueue.push_back(ref);
+      op->removeAttr("analog-alloc-id");
     }
   });
 
@@ -89,18 +90,18 @@ void CombineTileResultsPass::runOnOperation() {
     }
 
     auto memrefShape = memrefTy.getShape();
-    int64_t memTileLane = memrefShape[2];
+    int64_t memArrayLane = memrefShape[2];
 
     // ================================================================
     // Assumptions / Shape bindings (from your existing variables)
     // ================================================================
     // gridRows, gridCols        : gridTy.getGridShape()
-    // tileRows, tileCols        : tileTy.getTileShape()
-    // memTileRows, memTileCols  : memrefTy.getShape()[0,1]
-    // memTileLane               : memrefTy.getShape()[2]
-    // tileBufs                  : memref<gridRows*gridCols x memTileRows x memTileLane x f32>
-    // Result shape              : <1 x (gridRows * memTileLane) x f32>
-    // Reduction                 : column-wise reduction of tiles into row buffers
+    // arrayRows, arrayCols        : arrayTy.getArrayShape()
+    // memArrayRows, memArrayCols  : memrefTy.getShape()[0,1]
+    // memArrayLane               : memrefTy.getShape()[2]
+    // arrayBufs                  : memref<gridRows*gridCols x memArrayRows x memArrayLane x f32>
+    // Result shape              : <1 x (gridRows * memArrayLane) x f32>
+    // Reduction                 : column-wise reduction of arrays into row buffers
 
     // ================================================================
     // Constants
@@ -112,7 +113,7 @@ void CombineTileResultsPass::runOnOperation() {
 
     Value cGridRows = builder.create<arith::ConstantIndexOp>(loc, gridRows);
     Value cGridCols = builder.create<arith::ConstantIndexOp>(loc, gridCols);
-    Value cLane     = builder.create<arith::ConstantIndexOp>(loc, memTileLane);
+    Value cLane     = builder.create<arith::ConstantIndexOp>(loc, memArrayLane);
 
     Value c0f = builder.create<arith::ConstantFloatOp>(loc, f32Ty, llvm::APFloat(0.0f));
 
@@ -120,7 +121,7 @@ void CombineTileResultsPass::runOnOperation() {
     // ================================================================
     // Row-wise reduction buffers: gridRows  x lane
     // ================================================================
-    auto rowBufTy = MemRefType::get({gridRows, memTileLane}, f32Ty);
+    auto rowBufTy = MemRefType::get({gridRows, memArrayLane}, f32Ty);
     Value rowBufs = builder.create<memref::AllocOp>(loc, rowBufTy);
 
     // ================================================================
@@ -145,8 +146,8 @@ void CombineTileResultsPass::runOnOperation() {
       });
 
     // ================================================================
-    // Reduce column tiles into row tiles
-    // tileId = r * gridCols + c
+    // Reduce column arrays into row arrays
+    // arrayId = r * gridCols + c
     // ================================================================
     builder.create<scf::ForOp>(
       loc, c0, cGridRows, c1, ValueRange{},
@@ -163,7 +164,7 @@ void CombineTileResultsPass::runOnOperation() {
                 // Get temporary row buffers
                 Value acc = b3.create<memref::LoadOp>(loc, rowBufs, ValueRange{r, j});
 
-                // Get tile results
+                // Get array results
                 Value val = b3.create<memref::LoadOp>(loc, memrefVal, ValueRange{r, c, j});
 
                 // temporary row buffer += val
@@ -183,7 +184,7 @@ void CombineTileResultsPass::runOnOperation() {
     // Assemble final output vector: 1 x (gridRows * lane)
     // col = r * lane + j
     // ================================================================
-    int64_t outCols = gridRows * memTileLane;
+    int64_t outCols = gridRows * memArrayLane;
     auto outTy = MemRefType::get({1, outCols}, f32Ty);
     Value out = builder.create<memref::AllocOp>(loc, outTy);
 
@@ -220,13 +221,13 @@ void CombineTileResultsPass::runOnOperation() {
   });
 }
 
-void CombineTileResultsPass::getDependentDialects(DialectRegistry &registry) const {
+void CombineArrayResultsPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
 }
 
-std::unique_ptr<mlir::Pass> createCombineTileResultsPass() {
-  return std::make_unique<CombineTileResultsPass>();
+std::unique_ptr<mlir::Pass> createCombineArrayResultsPass() {
+  return std::make_unique<CombineArrayResultsPass>();
 }
 
 

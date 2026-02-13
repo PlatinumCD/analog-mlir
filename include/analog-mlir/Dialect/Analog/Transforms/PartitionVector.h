@@ -26,13 +26,13 @@ struct PartitionVectorPass
       const PartitionVectorPass &other)
       : PassWrapper(other) {}
 
-  Option<int64_t> tile_rows {*this, "tile-rows",
-      llvm::cl::desc("Number of rows per analog tile"),
+  Option<int64_t> array_rows {*this, "array-rows",
+      llvm::cl::desc("Number of rows per analog array"),
       llvm::cl::init(16)
   };
 
-  Option<int64_t> tile_cols {*this, "tile-cols",
-      llvm::cl::desc("Number of cols per analog tile"),
+  Option<int64_t> array_cols {*this, "array-cols",
+      llvm::cl::desc("Number of cols per analog array"),
       llvm::cl::init(16)
   };
 
@@ -44,7 +44,7 @@ struct PartitionVectorPass
 
 
 std::unique_ptr<mlir::Pass> createPartitionVectorPass();
-std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t tileRows, int64_t tileCols);
+std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t arrayRows, int64_t arrayCols);
 
 
 } // namespace analog

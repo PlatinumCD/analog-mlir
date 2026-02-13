@@ -4,8 +4,8 @@
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionMatrix.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceTiles.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceVTiles.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
 
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -39,27 +39,27 @@ void mlir::analog::registerMaterializePipeline() {
 struct PartitionPipelineOptions
     : public PassPipelineOptions<PartitionPipelineOptions> {
 
-  Option<int64_t> tileRows{
-      *this, "tile-rows",
-      llvm::cl::desc("Number of rows per analog tile"),
+  Option<int64_t> arrayRows{
+      *this, "array-rows",
+      llvm::cl::desc("Number of rows per analog array"),
       llvm::cl::init(16)};
 
-  Option<int64_t> tileCols{
-      *this, "tile-cols",
-      llvm::cl::desc("Number of cols per analog tile"),
+  Option<int64_t> arrayCols{
+      *this, "array-cols",
+      llvm::cl::desc("Number of cols per analog array"),
       llvm::cl::init(16)};
 };
 
 void mlir::analog::registerPartitionPipeline() {
   PassPipelineRegistration<PartitionPipelineOptions>(
       "analog-partition",
-      "Partition analog matrices and vectors into tiles",
+      "Partition analog matrices and vectors into arrays",
       [](OpPassManager &pm,
          const PartitionPipelineOptions &opts) {
         pm.addPass(createPartitionMatrixPass(
-            opts.tileRows, opts.tileCols));
+            opts.arrayRows, opts.arrayCols));
         pm.addPass(createPartitionVectorPass(
-            opts.tileRows, opts.tileCols));
+            opts.arrayRows, opts.arrayCols));
       });
 }
 
@@ -73,11 +73,11 @@ struct PlacePipelineOptions
 void mlir::analog::registerPlacePipeline() {
   PassPipelineRegistration<PlacePipelineOptions>(
       "analog-place",
-      "Extract and place analog tiles and vector tiles",
+      "Extract and place analog arrays and vector arrays",
       [](OpPassManager &pm,
          const PlacePipelineOptions &) {
-        pm.addPass(createPlaceTilesPass());
-        pm.addPass(createPlaceVTilesPass());
+        pm.addPass(createPlaceMatricesPass());
+        pm.addPass(createPlaceVectorsPass());
       });
 }
 

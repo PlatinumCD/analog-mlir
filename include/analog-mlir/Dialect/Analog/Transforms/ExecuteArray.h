@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_EXECUTE_TILES_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_EXECUTE_TILES_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_EXECUTE_ARRAY_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_EXECUTE_ARRAY_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -15,15 +15,15 @@
 namespace mlir {
 namespace analog {
 
-struct ExecuteTilesPass
-    : public mlir::PassWrapper<ExecuteTilesPass,
+struct ExecuteArrayPass
+    : public mlir::PassWrapper<ExecuteArrayPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ExecuteTilesPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ExecuteArrayPass)
 
   // ---- REQUIRED ----
-  ExecuteTilesPass() = default;
-  ExecuteTilesPass(
-      const ExecuteTilesPass &other)
+  ExecuteArrayPass() = default;
+  ExecuteArrayPass(
+      const ExecuteArrayPass &other)
       : PassWrapper(other) {}
 
   llvm::StringRef getArgument() const override;
@@ -33,10 +33,9 @@ struct ExecuteTilesPass
 };
 
 
-std::unique_ptr<mlir::Pass> createExecuteTilesPass();
+std::unique_ptr<mlir::Pass> createExecuteArrayPass();
 
 } // namespace analog
 } // namespace mlir
 
 #endif
-

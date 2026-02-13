@@ -35,7 +35,7 @@ static Value getDataPtrOperand(LLVM::CallOp call) {
   };
 
   // For exploded memref calls, operands are typically:
-  //   [allocated_ptr, aligned_ptr, offset, sizes..., strides..., tile_id]
+  //   [allocated_ptr, aligned_ptr, offset, sizes..., strides..., array_id]
   // and the first logical element base pointer is the aligned pointer.
   if (call.getNumOperands() >= 3 &&
       llvm::isa<LLVM::LLVMPointerType>(call.getOperand(1).getType()))
@@ -116,13 +116,13 @@ void ConvertAnalogToDebugShimsPass::runOnOperation() {
       }
 
       Value ptr = getDataPtrOperand(call);
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
       OpBuilder b(call);
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, "golem_debug_mvm_set"),
-          SmallVector<Value>{ptr, tileId});
+          SmallVector<Value>{ptr, arrayId});
       call.erase();
       return;
     }
@@ -134,13 +134,13 @@ void ConvertAnalogToDebugShimsPass::runOnOperation() {
       }
 
       Value ptr = getDataPtrOperand(call);
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
       OpBuilder b(call);
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, "golem_debug_mvm_load"),
-          SmallVector<Value>{ptr, tileId});
+          SmallVector<Value>{ptr, arrayId});
       call.erase();
       return;
     }
@@ -152,13 +152,13 @@ void ConvertAnalogToDebugShimsPass::runOnOperation() {
       }
 
       Value ptr = getDataPtrOperand(call);
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
       OpBuilder b(call);
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, "golem_debug_mvm_store"),
-          SmallVector<Value>{ptr, tileId});
+          SmallVector<Value>{ptr, arrayId});
       call.erase();
       return;
     }
@@ -169,13 +169,13 @@ void ConvertAnalogToDebugShimsPass::runOnOperation() {
         return;
       }
 
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
       OpBuilder b(call);
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, "golem_debug_mvm_compute"),
-          SmallVector<Value>{tileId});
+          SmallVector<Value>{arrayId});
       call.erase();
       return;
     }

@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PLACE_VTILES_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PLACE_VTILES_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PLACE_VECTORS_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PLACE_VECTORS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -15,10 +15,10 @@
 namespace mlir {
 namespace analog {
 
-struct PlaceVTilesPass
-    : public mlir::PassWrapper<PlaceVTilesPass,
+struct PlaceVectorsPass
+    : public mlir::PassWrapper<PlaceVectorsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PlaceVTilesPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PlaceVectorsPass)
 
   llvm::StringRef getArgument() const override;
   llvm::StringRef getDescription() const override;
@@ -27,10 +27,9 @@ struct PlaceVTilesPass
 };
 
 
-std::unique_ptr<mlir::Pass> createPlaceVTilesPass();
+std::unique_ptr<mlir::Pass> createPlaceVectorsPass();
 
 } // namespace analog
 } // namespace mlir
 
 #endif
-

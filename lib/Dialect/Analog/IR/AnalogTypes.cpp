@@ -228,30 +228,30 @@ mlir::analog::VectorType::print(mlir::AsmPrinter &printer) const {
 
 
 //===----------------------------------------------------------------------===//
-// TileGridType - verify
+// MatrixGridType - verify
 //===----------------------------------------------------------------------===//
 
 llvm::LogicalResult
-mlir::analog::TileGridType::verify(
+mlir::analog::MatrixGridType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> gridShape,
-    llvm::ArrayRef<int64_t> tileShape,
+    llvm::ArrayRef<int64_t> arrayShape,
     mlir::analog::MatrixType matrix) {
 
-  if (tileShape.size() != 2) {
-    return emitError() << "tile_shape must have exactly 2 dimensions";
+  if (arrayShape.size() != 2) {
+    return emitError() << "array_shape must have exactly 2 dimensions";
   }
 
-  if (tileShape[0] <= 0 || tileShape[1] <= 0) {
-    return emitError() << "tile_shape dimensions must be positive";
+  if (arrayShape[0] <= 0 || arrayShape[1] <= 0) {
+    return emitError() << "array_shape dimensions must be positive";
   }
 
-  if (tileShape.size() != 2) {
-    return emitError() << "tile_shape must have exactly 2 dimensions";
+  if (arrayShape.size() != 2) {
+    return emitError() << "array_shape must have exactly 2 dimensions";
   }
 
-  if (tileShape[0] <= 0 || tileShape[1] <= 0) {
-    return emitError() << "tile_shape dimensions must be positive";
+  if (arrayShape[0] <= 0 || arrayShape[1] <= 0) {
+    return emitError() << "array_shape dimensions must be positive";
   }
 
   auto matrixShape = matrix.getShape();
@@ -260,9 +260,9 @@ mlir::analog::TileGridType::verify(
   }
 
 /*  // Optional but sane invariant
-  if (matrixShape[0] % tileShape[0] != 0 ||
-      matrixShape[1] % tileShape[1] != 0) {
-    return emitError() << "matrix shape must be divisible by tile_shape";
+  if (matrixShape[0] % arrayShape[0] != 0 ||
+      matrixShape[1] % arrayShape[1] != 0) {
+    return emitError() << "matrix shape must be divisible by array_shape";
   }
 */
 
@@ -270,13 +270,13 @@ mlir::analog::TileGridType::verify(
 }
 
 //===----------------------------------------------------------------------===//
-// TileGridType - parse
+// MatrixGridType - parse
 //===----------------------------------------------------------------------===//
 
 mlir::Type
-mlir::analog::TileGridType::parse(mlir::AsmParser &parser) {
+mlir::analog::MatrixGridType::parse(mlir::AsmParser &parser) {
   llvm::SmallVector<int64_t> gridShape;
-  llvm::SmallVector<int64_t> tileShape;
+  llvm::SmallVector<int64_t> arrayShape;
   mlir::Type matrixType;
 
   if (parser.parseLess()) {
@@ -311,24 +311,24 @@ mlir::analog::TileGridType::parse(mlir::AsmParser &parser) {
     return Type();
   }
 
-  // tile shape
-  if (parser.parseKeyword("tile_shape") ||
+  // array shape
+  if (parser.parseKeyword("array_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
     return Type();
   }
 
-  int64_t tileDim;
-  if (parser.parseInteger(tileDim)) {
+  int64_t arrayDim;
+  if (parser.parseInteger(arrayDim)) {
     return Type();
   }
-  tileShape.push_back(tileDim);
+  arrayShape.push_back(arrayDim);
 
   while (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseInteger(tileDim)) {
+    if (parser.parseInteger(arrayDim)) {
       return Type();
     }
-    tileShape.push_back(tileDim);
+    arrayShape.push_back(arrayDim);
   }
 
   if (parser.parseRSquare()) {
@@ -353,20 +353,20 @@ mlir::analog::TileGridType::parse(mlir::AsmParser &parser) {
     return Type();
   }
 
-  return get(parser.getContext(), gridShape, tileShape, matrix);
+  return get(parser.getContext(), gridShape, arrayShape, matrix);
 }
 
 
 //===----------------------------------------------------------------------===//
-// TileGridType - print
+// MatrixGridType - print
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::TileGridType::print(mlir::AsmPrinter &printer) const {
+mlir::analog::MatrixGridType::print(mlir::AsmPrinter &printer) const {
   printer << "grid_shape=[";
   llvm::interleaveComma(getGridShape(), printer);
-  printer << "], tile_shape=[";
-  llvm::interleaveComma(getTileShape(), printer);
+  printer << "], array_shape=[";
+  llvm::interleaveComma(getArrayShape(), printer);
   printer << "], ";
   printer.printType(getMatrix());
 }
@@ -374,14 +374,14 @@ mlir::analog::TileGridType::print(mlir::AsmPrinter &printer) const {
 
 
 //===----------------------------------------------------------------------===//
-// VTileSliceType - verify
+// VectorSliceType - verify
 //===----------------------------------------------------------------------===//
 
 llvm::LogicalResult
-mlir::analog::VTileSliceType::verify(
+mlir::analog::VectorSliceType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> gridShape,
-    llvm::ArrayRef<int64_t> tileShape,
+    llvm::ArrayRef<int64_t> arrayShape,
     mlir::analog::VectorType vector) {
 
   if (gridShape.size() != 2) {
@@ -393,12 +393,12 @@ mlir::analog::VTileSliceType::verify(
   }
 
 
-  if (tileShape.size() != 2) {
-    return emitError() << "tile_shape must be 2-dimensional";
+  if (arrayShape.size() != 2) {
+    return emitError() << "array_shape must be 2-dimensional";
   }
 
-  if (tileShape[0] <= 0 || tileShape[1] <= 0) {
-    return emitError() << "tile_shape dimension must be positive";
+  if (arrayShape[0] <= 0 || arrayShape[1] <= 0) {
+    return emitError() << "array_shape dimension must be positive";
   }
 
   auto vecShape = vector.getShape();
@@ -411,8 +411,8 @@ mlir::analog::VTileSliceType::verify(
   }
 
 /*
-  if (vecShape[1] % tileShape[0] != 0) {
-    return emitError() << "vector length must be divisible by tile_shape";
+  if (vecShape[1] % arrayShape[0] != 0) {
+    return emitError() << "vector length must be divisible by array_shape";
   }
 */
 
@@ -421,13 +421,13 @@ mlir::analog::VTileSliceType::verify(
 
 
 //===----------------------------------------------------------------------===//
-// VTileSliceType - parse
+// VectorSliceType - parse
 //===----------------------------------------------------------------------===//
 
 mlir::Type
-mlir::analog::VTileSliceType::parse(mlir::AsmParser &parser) {
+mlir::analog::VectorSliceType::parse(mlir::AsmParser &parser) {
   llvm::SmallVector<int64_t> gridShape;
-  llvm::SmallVector<int64_t> tileShape;
+  llvm::SmallVector<int64_t> arrayShape;
   mlir::Type vectorType;
 
   if (parser.parseLess()) {
@@ -455,18 +455,18 @@ mlir::analog::VTileSliceType::parse(mlir::AsmParser &parser) {
     return Type();
   }
   
-  // tile shape
-  if (parser.parseKeyword("tile_shape") ||
+  // array shape
+  if (parser.parseKeyword("array_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
     return Type();
   }
 
-  int64_t tileDim;
-  if (parser.parseInteger(tileDim)) {
+  int64_t arrayDim;
+  if (parser.parseInteger(arrayDim)) {
     return Type();
   }
-  tileShape.push_back(tileDim);
+  arrayShape.push_back(arrayDim);
 
   if (parser.parseRSquare()) {
     return Type();
@@ -491,20 +491,20 @@ mlir::analog::VTileSliceType::parse(mlir::AsmParser &parser) {
     return Type();
   }
 
-  return get(parser.getContext(), gridShape, tileShape, vector);
+  return get(parser.getContext(), gridShape, arrayShape, vector);
 }
 
 
 //===----------------------------------------------------------------------===//
-// VTileSliceType - print
+// VectorSliceType - print
 //===----------------------------------------------------------------------===//
 
 void
-mlir::analog::VTileSliceType::print(mlir::AsmPrinter &printer) const {
+mlir::analog::VectorSliceType::print(mlir::AsmPrinter &printer) const {
   printer << "grid_shape=[";
   llvm::interleaveComma(getGridShape(), printer);
-  printer << "], tile_shape=[";
-  llvm::interleaveComma(getTileShape(), printer);
+  printer << "], array_shape=[";
+  llvm::interleaveComma(getArrayShape(), printer);
   printer << "], ";
   printer.printType(getVector());
 }

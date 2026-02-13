@@ -8,7 +8,7 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 
 //===- AnalogOps.td -------------------------------------------------------===//
 //
-//  Minimal analog ops for: matrix -> tiles -> set/load/compute/store
+//  Minimal analog ops for: matrix -> arrays -> set/load/compute/store
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,19 +39,19 @@ def Analog_MatrixFromTensorOp
 }
 
 //===----------------------------------------------------------------------===//
-// analog.tile.partition
-// Create an analog tile grid from matrix
+// analog.matrix.partition
+// Create an analog array grid from matrix
 //===----------------------------------------------------------------------===//
 
-def Analog_TilePartitionOp
-    : Analog_Op<"tile.partition"> {
+def Analog_MatrixPartitionOp
+    : Analog_Op<"matrix.partition"> {
 
-  let summary = "Create a tile partition view over an analog matrix";
+  let summary = "Create a array partition view over an analog matrix";
 
   let description = [{
     Declares that an analog matrix tensor is realized as a grid of
-    fixed-size analog tiles. The grid shape is derived from the
-    matrix shape and tile dimensions.
+    fixed-size analog arrays. The grid shape is derived from the
+    matrix shape and array dimensions.
   }];
 
   let arguments = (ins
@@ -59,7 +59,7 @@ def Analog_TilePartitionOp
   );
 
   let results = (outs
-    Analog_TileGridType:$result
+    Analog_MatrixGridType:$result
   );
 
   let assemblyFormat = [{
@@ -69,28 +69,28 @@ def Analog_TilePartitionOp
 }
 
 //===----------------------------------------------------------------------===//
-// analog.tile.place
+// analog.array.matrix.place
 // Place analog partition into accelerator 
 //===----------------------------------------------------------------------===//
 
-def Analog_TilePlaceOp
-    : Analog_Op<"tile.place"> {
+def Analog_ArrayMatrixPlaceOp
+    : Analog_Op<"array.matrix.place"> {
 
   let summary = "Place an analog partition into accelerator";
 
   let description = [{
-    Given a grid of analog tiles, this op places a single tile.
+    Given a grid of analog arrays, this op places a single array.
   }];
 
   let arguments = (ins
-    Analog_TileGridType:$input,
+    Analog_MatrixGridType:$input,
     Index:$rowIndex,
     Index:$colIndex,
     Variadic<Index>:$indices
   );
 
   let assemblyFormat = [{
-    $input `[` $rowIndex `,` $colIndex `]` `,` `tile` `[` $indices `]`
+    $input `[` $rowIndex `,` $colIndex `]` `,` `array` `[` $indices `]`
     attr-dict
     `:` qualified(type($input)) 
   }];
@@ -121,12 +121,12 @@ def Analog_VectorFromTensorOp
 }
 
 //===----------------------------------------------------------------------===//
-// analog.vtile.partition
-// Create an analog vtile slice from a vector
+// analog.vector.partition
+// Create an analog varray slice from a vector
 //===----------------------------------------------------------------------===//
 
-def Analog_VTilePartitionOp
-    : Analog_Op<"vtile.partition"> {
+def Analog_VectorPartitionOp
+    : Analog_Op<"vector.partition"> {
 
   let summary = "Partition an analog vector into slices.";
 
@@ -139,7 +139,7 @@ def Analog_VTilePartitionOp
   );
 
   let results = (outs
-    Analog_VTileSliceType:$result
+    Analog_VectorSliceType:$result
   );
 
   let assemblyFormat = [{
@@ -150,23 +150,23 @@ def Analog_VTilePartitionOp
 
 
 //===----------------------------------------------------------------------===//
-// analog.vtile.place
-// Set the vtile in the accelerator
+// analog.array.vector.place
+// Set the varray in the accelerator
 //===----------------------------------------------------------------------===//
 
-def Analog_VTilePlaceOp
-  : Analog_Op<"vtile.place"> {
+def Analog_ArrayVectorPlaceOp
+  : Analog_Op<"array.vector.place"> {
 
-  let summary = "Place an analog vtile into an accelerator";
+  let summary = "Place an analog varray into an accelerator";
 
   let arguments = (ins
-    Analog_VTileSliceType:$input,
+    Analog_VectorSliceType:$input,
     Index:$sliceIndex,
     Variadic<Index>:$indices
   );
 
   let assemblyFormat = [{
-    $input `[` $sliceIndex `]` `,` `tile` `[` $indices `]`
+    $input `[` $sliceIndex `]` `,` `array` `[` $indices `]`
     attr-dict
     `:` qualified(type($input)) 
   }];
@@ -174,40 +174,40 @@ def Analog_VTilePlaceOp
 
 
 //===----------------------------------------------------------------------===//
-// analog.tile.execute
-// Execute a tile in the accelerator
+// analog.array.execute
+// Execute a array in the accelerator
 //===----------------------------------------------------------------------===//
 
-def Analog_TileExecuteOp
-  : Analog_Op<"tile.execute"> {
+def Analog_ArrayExecuteOp
+  : Analog_Op<"array.execute"> {
 
-  let summary = "Execute a tile in the accelerator";
+  let summary = "Execute a array in the accelerator";
 
   let arguments = (ins
     Variadic<Index>:$indices
   );
 
   let results = (outs
-    Analog_TileGridType:$grid
+    Analog_MatrixGridType:$grid
   );
 
   let assemblyFormat = [{
-    `tile` `[` $indices `]` attr-dict `:` qualified(type($grid)) 
+    `array` `[` $indices `]` attr-dict `:` qualified(type($grid)) 
   }];
 }
 
 //===----------------------------------------------------------------------===//
-// analog.tile.store
-// store the results of a tile in the accelerator into a memory buffer
+// analog.array.store
+// store the results of a array in the accelerator into a memory buffer
 //===----------------------------------------------------------------------===//
 
-def Analog_TileStoreOp
-  : Analog_Op<"tile.store"> {
+def Analog_ArrayStoreOp
+  : Analog_Op<"array.store"> {
 
-  let summary = "Store the results of a tile into a memory buffer";
+  let summary = "Store the results of a array into a memory buffer";
 
   let arguments = (ins
-    Analog_TileGridType:$grid,
+    Analog_MatrixGridType:$grid,
     AnyMemRef:$dest,
     Variadic<Index>:$indices
   );

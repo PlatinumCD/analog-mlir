@@ -33,10 +33,10 @@ Type AnalogDialect::parseType(DialectAsmParser &parser) const {
     result = MatrixType::parse(parser);
   } else if (mnemonic == VectorType::getMnemonic()) {
     result = VectorType::parse(parser);
-  } else if (mnemonic == TileGridType::getMnemonic()) {
-    result = TileGridType::parse(parser);
-  } else if (mnemonic == VTileSliceType::getMnemonic()) {
-    result = VTileSliceType::parse(parser);
+  } else if (mnemonic == MatrixGridType::getMnemonic()) {
+    result = MatrixGridType::parse(parser);
+  } else if (mnemonic == VectorSliceType::getMnemonic()) {
+    result = VectorSliceType::parse(parser);
   } else {
     parser.emitError(parser.getNameLoc())
         << "unknown analog type: " << mnemonic;
@@ -65,15 +65,15 @@ void AnalogDialect::printType(Type type,
     return;
   }
 
-  if (auto w = llvm::dyn_cast<TileGridType>(type)) {
-    printer << TileGridType::getMnemonic() << "<";
+  if (auto w = llvm::dyn_cast<MatrixGridType>(type)) {
+    printer << MatrixGridType::getMnemonic() << "<";
     w.print(printer);
     printer << ">";
     return;
   }
 
-  if (auto w = llvm::dyn_cast<VTileSliceType>(type)) {
-    printer << VTileSliceType::getMnemonic() << "<";
+  if (auto w = llvm::dyn_cast<VectorSliceType>(type)) {
+    printer << VectorSliceType::getMnemonic() << "<";
     w.print(printer);
     printer << ">";
     return;

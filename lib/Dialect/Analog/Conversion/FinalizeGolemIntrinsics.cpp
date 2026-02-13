@@ -41,7 +41,7 @@ static Value getDataPtrOperand(LLVM::CallOp call) {
   };
 
   // For exploded memref calls, operands are typically:
-  //   [allocated_ptr, aligned_ptr, offset, sizes..., strides..., tile_id]
+  //   [allocated_ptr, aligned_ptr, offset, sizes..., strides..., array_id]
   // and the first logical element base pointer is the aligned pointer.
   if (call.getNumOperands() >= 3 &&
       llvm::isa<LLVM::LLVMPointerType>(call.getOperand(1).getType())) {
@@ -126,7 +126,7 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
       }
 
       Value ptr = getDataPtrOperand(call);
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
       OpBuilder b(call);
       StringRef dst = callee == "golem_analog_mvm_set"
                           ? "llvm.riscv.golem.analog.mvm.set"
@@ -137,7 +137,7 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, dst),
-          SmallVector<Value>{ptr, tileId}
+          SmallVector<Value>{ptr, arrayId}
       );
 
       call.erase();
@@ -151,12 +151,12 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
       }
 
       OpBuilder b(call);
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, "llvm.riscv.golem.analog.mvm"),
-          SmallVector<Value>{tileId}
+          SmallVector<Value>{arrayId}
       );
 
       call.erase();

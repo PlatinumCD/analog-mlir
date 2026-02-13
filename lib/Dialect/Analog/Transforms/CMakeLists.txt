@@ -4,11 +4,11 @@ add_mlir_library(MLIRAnalogTransforms
   MaterializeVectorFromTensor.cpp
   PartitionMatrix.cpp
   PartitionVector.cpp
-  PlaceTiles.cpp
-  PlaceVTiles.cpp
+  PlaceMatrices.cpp
+  PlaceVectors.cpp
 
-  ExecuteTiles.cpp
-  CombineTileResults.cpp
+  ExecuteArray.cpp
+  CombineArrayResults.cpp
   ReplaceMatmul.cpp
 
   GroupedPasses.cpp

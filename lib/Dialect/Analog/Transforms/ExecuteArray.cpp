@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/ExecuteTiles.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
@@ -29,26 +29,26 @@ namespace mlir {
 namespace analog {
 
 // =====--------------------------------=====
-//   ExecuteTilesPass - Pass
+//   ExecuteArrayPass - Pass
 // =====--------------------------------=====
 
-llvm::StringRef ExecuteTilesPass::getArgument() const {
-  return "analog-execute-tiles";
+llvm::StringRef ExecuteArrayPass::getArgument() const {
+  return "analog-execute-array";
 }
 
-llvm::StringRef ExecuteTilesPass::getDescription() const {
-  return "Insert ExecuteTiles ops";
+llvm::StringRef ExecuteArrayPass::getDescription() const {
+  return "Insert ExecuteArray ops";
 }
 
-void ExecuteTilesPass::runOnOperation() {
+void ExecuteArrayPass::runOnOperation() {
   auto func = getOperation();
 
-  std::deque<analog::TileGridType> gridQueue;
+  std::deque<analog::MatrixGridType> gridQueue;
 
-  // Find tile partition
-  func.walk([&](analog::TilePartitionOp op) {
+  // Find array partition
+  func.walk([&](analog::MatrixPartitionOp op) {
     auto grid = op.getResult();
-    auto gridTy = llvm::dyn_cast<analog::TileGridType>(grid.getType());
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
     if (!gridTy) {
       return;
     }
@@ -68,21 +68,21 @@ void ExecuteTilesPass::runOnOperation() {
     auto gridTy = gridQueue.front();
     gridQueue.pop_front();
 
-    auto tileShape = gridTy.getTileShape();
-    int64_t tileRows = tileShape[0];
+    auto arrayShape = gridTy.getArrayShape();
+    int64_t arrayRows = arrayShape[0];
 
     auto gridShape = gridTy.getGridShape();
-    int64_t numTileRows = gridShape[0]; 
-    int64_t numTileCols = gridShape[1]; 
+    int64_t numArrayRows = gridShape[0]; 
+    int64_t numArrayCols = gridShape[1]; 
 
     auto f32Ty = builder.getF32Type();
 
-    // memref<tile_row x tile_col x lanes x f32>
-    auto tileOutputBuffersTy = mlir::MemRefType::get({numTileRows, numTileCols, tileRows}, f32Ty);
-    Value tileOutputBuffers = builder.create<memref::AllocOp>(loc, tileOutputBuffersTy);
+    // memref<array_row x array_col x lanes x f32>
+    auto arrayOutputBuffersTy = mlir::MemRefType::get({numArrayRows, numArrayCols, arrayRows}, f32Ty);
+    Value arrayOutputBuffers = builder.create<memref::AllocOp>(loc, arrayOutputBuffersTy);
 
-    auto tileOutputBuffersOp = tileOutputBuffers.getDefiningOp<memref::AllocOp>();
-    tileOutputBuffersOp->setAttr(
+    auto arrayOutputBuffersOp = arrayOutputBuffers.getDefiningOp<memref::AllocOp>();
+    arrayOutputBuffersOp->setAttr(
       "analog-alloc-id",
       builder.getI64IntegerAttr(alloc_id)
     );
@@ -91,27 +91,27 @@ void ExecuteTilesPass::runOnOperation() {
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
 
-    Value ubTileRows = builder.create<arith::ConstantIndexOp>(loc, numTileRows);
-    Value ubTileCols = builder.create<arith::ConstantIndexOp>(loc, numTileCols);
+    Value ubArrayRows = builder.create<arith::ConstantIndexOp>(loc, numArrayRows);
+    Value ubArrayCols = builder.create<arith::ConstantIndexOp>(loc, numArrayCols);
 
-    // for tile-row
+    // for array-row
     builder.create<scf::ForOp>(
-      loc, zero, ubTileRows, one, ValueRange{},
+      loc, zero, ubArrayRows, one, ValueRange{},
       [&](OpBuilder &b1, Location loc, Value tr, ValueRange) {
 
-        // for tile-col
+        // for array-col
         b1.create<scf::ForOp>(
-          loc, zero, ubTileCols, one, ValueRange{},
+          loc, zero, ubArrayCols, one, ValueRange{},
           [&](OpBuilder &b2, Location loc, Value tc, ValueRange) {
 
-            // Execute tile
-            Value tile = b2.create<analog::TileExecuteOp>(loc, gridTy, ValueRange{tr, tc});
+            // Execute array
+            Value array = b2.create<analog::ArrayExecuteOp>(loc, gridTy, ValueRange{tr, tc});
 
-            // Store 1x(tileRows) lanes into [tr, tc, :]
-            b2.create<analog::TileStoreOp>(
+            // Store 1x(arrayRows) lanes into [tr, tc, :]
+            b2.create<analog::ArrayStoreOp>(
               loc,
-              tile,
-              tileOutputBuffers,
+              array,
+              arrayOutputBuffers,
               ValueRange{tr, tc}
             );
 
@@ -123,12 +123,12 @@ void ExecuteTilesPass::runOnOperation() {
   });
 }
 
-void ExecuteTilesPass::getDependentDialects(DialectRegistry &registry) const {
+void ExecuteArrayPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
 
-std::unique_ptr<mlir::Pass> createExecuteTilesPass() {
-  return std::make_unique<ExecuteTilesPass>();
+std::unique_ptr<mlir::Pass> createExecuteArrayPass() {
+  return std::make_unique<ExecuteArrayPass>();
 }
 
 

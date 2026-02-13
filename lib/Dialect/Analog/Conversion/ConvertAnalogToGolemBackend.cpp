@@ -54,7 +54,7 @@ static Value castToI32(PatternRewriter &rewriter, Location loc, Value value) {
   return rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
 }
 
-static Value buildPackedTileId(PatternRewriter &rewriter, Location loc, Value row,
+static Value buildPackedArrayId(PatternRewriter &rewriter, Location loc, Value row,
                                Value col, int64_t gridCols, int64_t matrixWidth) {
   Value rowI32 = castToI32(rewriter, loc, row);
   Value colI32 = castToI32(rewriter, loc, col);
@@ -71,7 +71,7 @@ static Value buildPackedTileId(PatternRewriter &rewriter, Location loc, Value ro
   return rewriter.create<arith::OrIOp>(loc, upper, lower);
 }
 
-static Value buildLinearTileId(PatternRewriter &rewriter, Location loc, Value row,
+static Value buildLinearArrayId(PatternRewriter &rewriter, Location loc, Value row,
                                Value col, int64_t gridCols) {
   Value rowI32 = castToI32(rewriter, loc, row);
   Value colI32 = castToI32(rewriter, loc, col);
@@ -122,12 +122,12 @@ public:
 };
 
 
-class TilePartitionLowering : public OpConversionPattern<analog::TilePartitionOp> {
+class MatrixPartitionLowering : public OpConversionPattern<analog::MatrixPartitionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::TilePartitionOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::MatrixPartitionOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOp(op, adaptor.getMatrix());
     return success();
@@ -135,12 +135,12 @@ public:
 };
 
 
-class VTilePartitionLowering : public OpConversionPattern<analog::VTilePartitionOp> {
+class VectorPartitionLowering : public OpConversionPattern<analog::VectorPartitionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::VTilePartitionOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::VectorPartitionOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOp(op, adaptor.getVector());
     return success();
@@ -148,17 +148,17 @@ public:
 };
 
 
-class TilePlaceLowering : public OpConversionPattern<analog::TilePlaceOp> {
+class ArrayMatrixPlaceLowering : public OpConversionPattern<analog::ArrayMatrixPlaceOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::TilePlaceOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::ArrayMatrixPlaceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
 
-    auto gridTy = llvm::dyn_cast<analog::TileGridType>(op.getInput().getType());
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getInput().getType());
     if (!gridTy) {
-      return rewriter.notifyMatchFailure(op, "expected analog.tile.grid input type");
+      return rewriter.notifyMatchFailure(op, "expected analog.matrix.grid input type");
     }
 
     auto matrixTy = llvm::dyn_cast<RankedTensorType>(adaptor.getInput().getType());
@@ -166,16 +166,16 @@ public:
       return rewriter.notifyMatchFailure(op, "expected lowered matrix tensor<mxn>");
     }
 
-    auto tileShape = gridTy.getTileShape();
-    int64_t tileRows = tileShape[0];
-    int64_t tileCols = tileShape[1];
-    Value cTileRows = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileRows);
-    Value cTileCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileCols);
-    Value rowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getRowIndex(), cTileRows);
-    Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getColIndex(), cTileCols);
+    auto arrayShape = gridTy.getArrayShape();
+    int64_t arrayRows = arrayShape[0];
+    int64_t arrayCols = arrayShape[1];
+    Value cArrayRows = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), arrayRows);
+    Value cArrayCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), arrayCols);
+    Value rowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getRowIndex(), cArrayRows);
+    Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getColIndex(), cArrayCols);
 
     SmallVector<OpFoldResult> offsets{rowOffset, colOffset};
-    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(tileRows), rewriter.getIndexAttr(tileCols)};
+    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(arrayRows), rewriter.getIndexAttr(arrayCols)};
     SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
     auto fullMemrefTy = MemRefType::get(matrixTy.getShape(), matrixTy.getElementType());
@@ -183,7 +183,7 @@ public:
         rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
     auto subviewTy =
         memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
-    Value tileMemref =
+    Value arrayMemref =
         rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
 
     int64_t gridCols = gridTy.getGridShape()[1];
@@ -191,29 +191,29 @@ public:
     if (ShapedType::isDynamic(matrixWidth))
       matrixWidth = gridTy.getMatrix().getShape()[1];
     if (ShapedType::isDynamic(matrixWidth))
-      return rewriter.notifyMatchFailure(op, "expected static matrix width for packed tile_id");
-    Value tileId = buildPackedTileId(rewriter, op.getLoc(), adaptor.getRowIndex(),
+      return rewriter.notifyMatchFailure(op, "expected static matrix width for packed array_id");
+    Value arrayId = buildPackedArrayId(rewriter, op.getLoc(), adaptor.getRowIndex(),
                                      adaptor.getColIndex(), gridCols,
                                      matrixWidth);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_set", {tileMemref, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_set", {arrayMemref, arrayId});
 
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-class VTilePlaceLowering : public OpConversionPattern<analog::VTilePlaceOp> {
+class ArrayVectorPlaceLowering : public OpConversionPattern<analog::ArrayVectorPlaceOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::VTilePlaceOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::ArrayVectorPlaceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
 
-    auto sliceTy = llvm::dyn_cast<analog::VTileSliceType>(op.getInput().getType());
+    auto sliceTy = llvm::dyn_cast<analog::VectorSliceType>(op.getInput().getType());
     if (!sliceTy) {
-      return rewriter.notifyMatchFailure(op, "expected analog.vtile.slice input type");
+      return rewriter.notifyMatchFailure(op, "expected analog.vector.slice input type");
     }
 
     auto vectorTy = llvm::dyn_cast<RankedTensorType>(adaptor.getInput().getType());
@@ -221,20 +221,20 @@ public:
       return rewriter.notifyMatchFailure(op, "expected lowered vector tensor<1xn>");
     }
 
-    auto tileShape = sliceTy.getTileShape();
-    int64_t tileCols = tileShape[1];
+    auto arrayShape = sliceTy.getArrayShape();
+    int64_t arrayCols = arrayShape[1];
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-    Value cTileCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileCols);
-    Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getSliceIndex(), cTileCols);
+    Value cArrayCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), arrayCols);
+    Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getSliceIndex(), cArrayCols);
 
     SmallVector<OpFoldResult> offsets{c0, colOffset};
-    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(1), rewriter.getIndexAttr(tileCols)};
+    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(1), rewriter.getIndexAttr(arrayCols)};
     SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
     auto fullMemrefTy = MemRefType::get(vectorTy.getShape(), vectorTy.getElementType());
     Value fullMemref = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
     auto subviewTy = memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
-    Value tileMemref = rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
+    Value arrayMemref = rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
     int64_t gridCols = sliceTy.getGridShape()[1];
     Value row = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value col = adaptor.getSliceIndex();
@@ -244,43 +244,43 @@ public:
       col = adaptor.getIndices()[1];
     }
 
-    Value tileId = buildLinearTileId(rewriter, op.getLoc(), row, col, gridCols);
+    Value arrayId = buildLinearArrayId(rewriter, op.getLoc(), row, col, gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_load", {tileMemref, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_load", {arrayMemref, arrayId});
 
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-class TileExecuteLowering : public OpConversionPattern<analog::TileExecuteOp> {
+class ArrayExecuteLowering : public OpConversionPattern<analog::ArrayExecuteOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::TileExecuteOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::ArrayExecuteOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
 
-    auto gridTy = llvm::dyn_cast<analog::TileGridType>(op.getGrid().getType());
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getGrid().getType());
     if (!gridTy) {
-      return rewriter.notifyMatchFailure(op, "expected analog.tile.grid result type");
+      return rewriter.notifyMatchFailure(op, "expected analog.matrix.grid result type");
     }
 
     if (adaptor.getIndices().size() < 2) {
-      return rewriter.notifyMatchFailure(op, "expected [tileRow, tileCol] indices");
+      return rewriter.notifyMatchFailure(op, "expected [arrayRow, arrayCol] indices");
     }
 
     int64_t gridCols = gridTy.getGridShape()[1];
-    Value tileId = buildLinearTileId(rewriter, op.getLoc(),
+    Value arrayId = buildLinearArrayId(rewriter, op.getLoc(),
                                      adaptor.getIndices()[0],
                                      adaptor.getIndices()[1], gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_compute", {tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_compute", {arrayId});
 
     auto loweredTy = getTypeConverter()->convertType(op.getType());
     auto rankedTy = llvm::dyn_cast<RankedTensorType>(loweredTy);
     if (!rankedTy) {
-      return rewriter.notifyMatchFailure(op, "expected analog.tile.execute to lower to ranked tensor type");
+      return rewriter.notifyMatchFailure(op, "expected analog.array.execute to lower to ranked tensor type");
     }
 
     Value lowered = rewriter.create<tensor::EmptyOp>(
@@ -294,16 +294,16 @@ public:
   }
 };
 
-class TileStoreLowering : public OpConversionPattern<analog::TileStoreOp> {
+class ArrayStoreLowering : public OpConversionPattern<analog::ArrayStoreOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(analog::TileStoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(analog::ArrayStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
 
     if (adaptor.getIndices().size() < 2) {
-      return rewriter.notifyMatchFailure(op, "expected at least [tileRow, tileCol] indices");
+      return rewriter.notifyMatchFailure(op, "expected at least [arrayRow, arrayCol] indices");
     }
 
     auto destTy = llvm::dyn_cast<MemRefType>(adaptor.getDest().getType());
@@ -311,32 +311,32 @@ public:
       return rewriter.notifyMatchFailure(op, "expected memref<gridR x gridC x lanes x elem>");
     }
 
-    int64_t tileRows = destTy.getShape()[2];
+    int64_t arrayRows = destTy.getShape()[2];
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
 
     SmallVector<OpFoldResult> offsets{adaptor.getIndices()[0], adaptor.getIndices()[1], c0};
     SmallVector<OpFoldResult> sizes{
         rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-        rewriter.getIndexAttr(tileRows)};
+        rewriter.getIndexAttr(arrayRows)};
     SmallVector<OpFoldResult> strides{
         rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
         rewriter.getIndexAttr(1)};
 
-    Value tileMemref = rewriter
+    Value arrayMemref = rewriter
                            .create<memref::SubViewOp>(op.getLoc(), adaptor.getDest(), offsets, sizes, strides)
                            .getResult();
 
-    auto gridTy = llvm::dyn_cast<analog::TileGridType>(op.getGrid().getType());
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getGrid().getType());
     if (!gridTy) {
-      return rewriter.notifyMatchFailure(op, "expected analog.tile.grid input type");
+      return rewriter.notifyMatchFailure(op, "expected analog.matrix.grid input type");
     }
 
     int64_t gridCols = gridTy.getGridShape()[1];
-    Value tileId = buildLinearTileId(rewriter, op.getLoc(),
+    Value arrayId = buildLinearArrayId(rewriter, op.getLoc(),
                                      adaptor.getIndices()[0],
                                      adaptor.getIndices()[1], gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {tileMemref, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {arrayMemref, arrayId});
 
     rewriter.eraseOp(op);
     return success();
@@ -374,20 +374,20 @@ void ConvertAnalogToGolemBackendPass::runOnOperation() {
   typeConverter.addConversion([](analog::VectorType type) -> Type {
     return RankedTensorType::get(type.getShape(), type.getElementType());
   });
-  typeConverter.addConversion([](analog::TileGridType type) -> Type {
+  typeConverter.addConversion([](analog::MatrixGridType type) -> Type {
     auto matrix = type.getMatrix();
     return RankedTensorType::get(matrix.getShape(), matrix.getElementType());
   });
-  typeConverter.addConversion([](analog::VTileSliceType type) -> Type {
+  typeConverter.addConversion([](analog::VectorSliceType type) -> Type {
     auto vector = type.getVector();
     return RankedTensorType::get(vector.getShape(), vector.getElementType());
   });
 
   RewritePatternSet patterns(ctx);
   patterns.add<MatrixFromTensorLowering, VectorFromTensorLowering,
-               TilePartitionLowering, VTilePartitionLowering,
-               TilePlaceLowering, VTilePlaceLowering, TileExecuteLowering,
-               TileStoreLowering>(typeConverter, ctx);
+               MatrixPartitionLowering, VectorPartitionLowering,
+               ArrayMatrixPlaceLowering, ArrayVectorPlaceLowering,
+               ArrayExecuteLowering, ArrayStoreLowering>(typeConverter, ctx);
 
   ConversionTarget target(*ctx);
   target.addIllegalDialect<analog::AnalogDialect>();

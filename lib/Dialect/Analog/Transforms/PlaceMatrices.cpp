@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceVTiles.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
@@ -26,43 +26,41 @@ namespace mlir {
 namespace analog {
 
 // =====--------------------------------=====
-//   PlaceVTilesPass - Pass
+//   PlaceMatricesPass - Pass
 // =====--------------------------------=====
 
-llvm::StringRef PlaceVTilesPass::getArgument() const {
-  return "analog-place-vtiles";
+llvm::StringRef PlaceMatricesPass::getArgument() const {
+  return "analog-place-matrices";
 }
 
-llvm::StringRef PlaceVTilesPass::getDescription() const {
-  return "Generate vtile placement loops that emit analog.vtile.place for each vector tile coordinate";
+llvm::StringRef PlaceMatricesPass::getDescription() const {
+  return "Generate array placement loops that emit analog.array.matrix.place for each array-grid coordinate";
 }
 
-void PlaceVTilesPass::runOnOperation() {
+void PlaceMatricesPass::runOnOperation() {
   auto func = getOperation();
 
-  func.walk([&](analog::VTilePartitionOp op) {
+  func.walk([&](analog::MatrixPartitionOp op) {
 
-    auto slice = op.getResult();
-    auto sliceTy = llvm::dyn_cast<analog::VTileSliceType>(slice.getType());
-    if (!sliceTy) {
+    auto grid = op.getResult();
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
+    if (!gridTy) {
       return;
     }
 
-    auto gridShape = sliceTy.getGridShape();
-    int64_t numTileRows = gridShape[0]; 
-    int64_t numTileCols = gridShape[1];
+    auto gridShape = gridTy.getGridShape();
+    int64_t numArrayRows = gridShape[0]; 
+    int64_t numArrayCols = gridShape[1]; 
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
     auto loc = op.getLoc();
 
-    // Create index constants
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
-    Value ubTr = builder.create<arith::ConstantIndexOp>(loc, numTileRows);
-    Value ubTc = builder.create<arith::ConstantIndexOp>(loc, numTileCols);
+    Value ubTr = builder.create<arith::ConstantIndexOp>(loc, numArrayRows);
+    Value ubTc = builder.create<arith::ConstantIndexOp>(loc, numArrayCols);
 
-    // Now build the loops
     builder.create<scf::ForOp>(
       loc, zero, ubTr, one, ValueRange{},
       [&](OpBuilder &b1, Location loc, Value tr, ValueRange) {
@@ -71,9 +69,10 @@ void PlaceVTilesPass::runOnOperation() {
           loc, zero, ubTc, one, ValueRange{},
           [&](OpBuilder &b2, Location loc, Value tc, ValueRange) {
 
-            b2.create<analog::VTilePlaceOp>(
+            b2.create<analog::ArrayMatrixPlaceOp>(
               loc,
-              slice,
+              grid,
+              tr,
               tc,
               ValueRange{tr, tc}
             );
@@ -83,15 +82,16 @@ void PlaceVTilesPass::runOnOperation() {
 
         b1.create<scf::YieldOp>(loc);
       });
+
   });
 }
 
-void PlaceVTilesPass::getDependentDialects(DialectRegistry &registry) const {
+void PlaceMatricesPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
 
-std::unique_ptr<mlir::Pass> createPlaceVTilesPass() {
-  return std::make_unique<PlaceVTilesPass>();
+std::unique_ptr<mlir::Pass> createPlaceMatricesPass() {
+  return std::make_unique<PlaceMatricesPass>();
 }
 
 

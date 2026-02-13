@@ -78,20 +78,20 @@ def Analog_VectorType : Analog_Type<"Vector", "vector"> {
 }
 
 // =====-------------------------------------------===== 
-//       TileGridType
+//       MatrixGridType
 // =====-------------------------------------------===== 
 
-def Analog_TileGridType : Analog_Type<"TileGrid", "tile.grid"> {
-  let summary = "Analog tile grid view type";
+def Analog_MatrixGridType : Analog_Type<"MatrixGrid", "matrix.grid"> {
+  let summary = "Analog array grid view type";
 
   let description = [{
-    Represents a 2D grid of analog tiles, each tile having a fixed shape
+    Represents a 2D grid of analog arrays, each array having a fixed shape
     and element type.
   }];
 
   let parameters = (ins
     ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$gridShape,
-    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$tileShape,
+    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$arrayShape,
     Analog_MatrixType:$matrix
   );
 
@@ -101,20 +101,20 @@ def Analog_TileGridType : Analog_Type<"TileGrid", "tile.grid"> {
 
 
 // =====-------------------------------------------===== 
-//       VTileSliceType
+//       VectorSliceType
 // =====-------------------------------------------===== 
 
-def Analog_VTileSliceType : Analog_Type<"VTileSlice", "vtile.slice"> {
-  let summary = "Analog tile slice view type";
+def Analog_VectorSliceType : Analog_Type<"VectorSlice", "vector.slice"> {
+  let summary = "Analog array slice view type";
 
   let description = [{
-    Represents a 1D view of analog vtiles, each vtile having a fixed shape
+    Represents a 1D view of analog varrays, each varray having a fixed shape
     and element type.
   }];
 
   let parameters = (ins
     ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$gridShape,
-    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$tileShape,
+    ArrayRefParameter<"int64_t", "Shape (e.g., [1,8])">:$arrayShape,
     Analog_VectorType:$vector
   );
 

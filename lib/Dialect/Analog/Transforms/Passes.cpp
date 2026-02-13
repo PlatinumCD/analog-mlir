@@ -3,13 +3,13 @@
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionMatrix.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceTiles.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceVTiles.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
 
 #include "analog-mlir/Dialect/Analog/Transforms/GroupedPasses.h"
 
-#include "analog-mlir/Dialect/Analog/Transforms/ExecuteTiles.h"
-#include "analog-mlir/Dialect/Analog/Transforms/CombineTileResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
+#include "analog-mlir/Dialect/Analog/Transforms/CombineArrayResults.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
 
 #include <mlir/Pass/PassRegistry.h>
@@ -25,10 +25,10 @@ void registerAnalogPasses() {
   PassRegistration<MaterializeVectorFromTensorPass>();
   PassRegistration<PartitionMatrixPass>();
   PassRegistration<PartitionVectorPass>();
-  PassRegistration<PlaceTilesPass>();
-  PassRegistration<PlaceVTilesPass>();
-  PassRegistration<ExecuteTilesPass>();
-  PassRegistration<CombineTileResultsPass>();
+  PassRegistration<PlaceMatricesPass>();
+  PassRegistration<PlaceVectorsPass>();
+  PassRegistration<ExecuteArrayPass>();
+  PassRegistration<CombineArrayResultsPass>();
   PassRegistration<ReplaceMatmulPass>();
   
   // Pipelines
