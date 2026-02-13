@@ -12,7 +12,8 @@ namespace analog {
 namespace {
 
 static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
-                                            LLVM::LLVMFunctionType type) {
+                                            LLVM::LLVMFunctionType type,
+                                            bool makePrivate = true) {
 
   if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name)) {
     return fn;
@@ -20,7 +21,9 @@ static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
 
   OpBuilder b(module.getBodyRegion());
   auto fn = b.create<LLVM::LLVMFuncOp>(module.getLoc(), name, type);
-  fn.setPrivate();
+  if (makePrivate) {
+    fn.setPrivate();
+  }
   return fn;
 }
 
@@ -108,6 +111,10 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
   getOrCreateLLVMFunc(
       module, "llvm.riscv.golem.analog.mvm",
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {i32Ty}, false));
+  auto tileIdPassthrough = getOrCreateLLVMFunc(
+      module, "golem_analog_tileid_passthrough",
+      LLVM::LLVMFunctionType::get(i32Ty, {i32Ty}, false),
+      /*makePrivate=*/false);
 
   module.walk([&](LLVM::CallOp call) {
     auto calleeAttr = call.getCalleeAttr();
@@ -127,13 +134,19 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
 
       Value ptr = getDataPtrOperand(call);
       Value tileId = call.getOperand(call.getNumOperands() - 1);
+      OpBuilder b(call);
+      tileId = b
+                   .create<LLVM::CallOp>(
+                       call.getLoc(), TypeRange{i32Ty},
+                       SymbolRefAttr::get(ctx, tileIdPassthrough.getName()),
+                       SmallVector<Value>{tileId})
+                   .getResult();
       StringRef dst = callee == "golem_analog_mvm_set"
                           ? "llvm.riscv.golem.analog.mvm.set"
                           : (callee == "golem_analog_mvm_load"
                                  ? "llvm.riscv.golem.analog.mvm.load"
                                  : "llvm.riscv.golem.analog.mvm.store");
 
-      OpBuilder b(call);
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
           SymbolRefAttr::get(ctx, dst),
@@ -150,8 +163,14 @@ void FinalizeGolemIntrinsicsPass::runOnOperation() {
         return;
       }
 
-      Value tileId = call.getOperand(call.getNumOperands() - 1);
       OpBuilder b(call);
+      Value tileId = call.getOperand(call.getNumOperands() - 1);
+      tileId = b
+                   .create<LLVM::CallOp>(
+                       call.getLoc(), TypeRange{i32Ty},
+                       SymbolRefAttr::get(ctx, tileIdPassthrough.getName()),
+                       SmallVector<Value>{tileId})
+                   .getResult();
 
       b.create<LLVM::CallOp>(
           call.getLoc(), TypeRange{},
