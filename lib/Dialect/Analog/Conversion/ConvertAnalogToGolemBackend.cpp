@@ -22,8 +22,9 @@ namespace {
 
 static func::FuncOp getOrCreateIntrinsicDecl(ModuleOp module, StringRef name,
                                              FunctionType type) {
-  if (auto existing = module.lookupSymbol<func::FuncOp>(name))
+  if (auto existing = module.lookupSymbol<func::FuncOp>(name)) {
     return existing;
+  }
 
   OpBuilder b(module.getBodyRegion());
   auto fn = b.create<func::FuncOp>(module.getLoc(), name, type);
@@ -61,37 +62,6 @@ static Value buildLinearTileId(PatternRewriter &rewriter, Location loc,
   Value rowBase = rewriter.create<arith::MulIOp>(loc, rowI32, cGridCols);
   return rewriter.create<arith::AddIOp>(loc, rowBase, colI32);
 }
-
-static Value flattenToDynamic1DMemRef(PatternRewriter &rewriter, Location loc,
-                                      Value memrefVal) {
-  auto memTy = llvm::dyn_cast<MemRefType>(memrefVal.getType());
-  if (!memTy) {
-    return memrefVal;
-  }
-
-  Value flat = memrefVal;
-  if (memTy.getRank() > 1) {
-    SmallVector<ReassociationIndices> reassociation(1);
-    for (int64_t i = 0; i < memTy.getRank(); ++i) {
-      reassociation[0].push_back(i);
-    }
-
-    flat = rewriter.create<memref::CollapseShapeOp>(loc, memrefVal, reassociation).getResult();
-    memTy = llvm::cast<MemRefType>(flat.getType());
-  }
-
-  if (memTy.getRank() != 1) {
-    return flat;
-  }
-
-  auto dyn1DTy = MemRefType::get({ShapedType::kDynamic}, memTy.getElementType());
-  if (memTy == dyn1DTy) {
-    return flat;
-  }
-
-  return rewriter.create<memref::CastOp>(loc, dyn1DTy, flat);
-}
-
 
 static void emitIntrinsicCall(PatternRewriter &rewriter, Location loc,
                               StringRef intrinsicName, ValueRange operands) {
@@ -182,8 +152,6 @@ public:
     auto tileShape = gridTy.getTileShape();
     int64_t tileRows = tileShape[0];
     int64_t tileCols = tileShape[1];
-    auto tileTensorTy = RankedTensorType::get({tileRows, tileCols}, matrixTy.getElementType());
-
     Value cTileRows = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileRows);
     Value cTileCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileCols);
     Value rowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getRowIndex(), cTileRows);
@@ -193,16 +161,13 @@ public:
     SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(tileRows), rewriter.getIndexAttr(tileCols)};
     SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
-    Value tileTensor = rewriter.create<tensor::ExtractSliceOp>(
-        op.getLoc(),
-        tileTensorTy,
-        adaptor.getInput(),
-        offsets, sizes, strides);
-
-    auto tileMemrefTy = MemRefType::get({tileRows, tileCols}, matrixTy.getElementType());
-    Value tileMemref = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), tileMemrefTy, tileTensor);
-
-    Value ptr = flattenToDynamic1DMemRef(rewriter, op.getLoc(), tileMemref);
+    auto fullMemrefTy = MemRefType::get(matrixTy.getShape(), matrixTy.getElementType());
+    Value fullMemref =
+        rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
+    auto subviewTy =
+        memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
+    Value tileMemref =
+        rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
 
     int64_t gridCols = gridTy.getGridShape()[1];
     Value tileId = buildLinearTileId(rewriter, op.getLoc(),
@@ -210,7 +175,7 @@ public:
                                      adaptor.getColIndex(),
                                      gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_set", {ptr, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_set", {tileMemref, tileId});
 
     rewriter.eraseOp(op);
     return success();
@@ -237,8 +202,6 @@ public:
 
     auto tileShape = sliceTy.getTileShape();
     int64_t tileCols = tileShape[1];
-    auto tileTensorTy = RankedTensorType::get({1, tileCols}, vectorTy.getElementType());
-
     Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value cTileCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), tileCols);
     Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getSliceIndex(), cTileCols);
@@ -247,18 +210,12 @@ public:
     SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(1), rewriter.getIndexAttr(tileCols)};
     SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
-    Value tileTensor = rewriter.create<tensor::ExtractSliceOp>(
-        op.getLoc(),
-        tileTensorTy,
-        adaptor.getInput(),
-        offsets, sizes, strides);
-
-    auto tileMemrefTy = MemRefType::get({1, tileCols}, vectorTy.getElementType());
-    Value tileMemref = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), tileMemrefTy, tileTensor);
-
-    Value ptr = flattenToDynamic1DMemRef(rewriter, op.getLoc(), tileMemref);
+    auto fullMemrefTy = MemRefType::get(vectorTy.getShape(), vectorTy.getElementType());
+    Value fullMemref = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
+    auto subviewTy = memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
+    Value tileMemref = rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
     int64_t gridCols = sliceTy.getGridShape()[1];
-    Value row = adaptor.getSliceIndex();
+    Value row = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value col = adaptor.getSliceIndex();
 
     if (adaptor.getIndices().size() >= 2) {
@@ -268,7 +225,7 @@ public:
 
     Value tileId = buildLinearTileId(rewriter, op.getLoc(), row, col, gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_load", {ptr, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_load", {tileMemref, tileId});
 
     rewriter.eraseOp(op);
     return success();
@@ -349,7 +306,6 @@ public:
                            .create<memref::SubViewOp>(op.getLoc(), adaptor.getDest(), offsets, sizes, strides)
                            .getResult();
 
-    Value ptr = flattenToDynamic1DMemRef(rewriter, op.getLoc(), tileMemref);
     auto gridTy = llvm::dyn_cast<analog::TileGridType>(op.getGrid().getType());
     if (!gridTy) {
       return rewriter.notifyMatchFailure(op, "expected analog.tile.grid input type");
@@ -361,7 +317,7 @@ public:
                                      adaptor.getIndices()[1],
                                      gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {ptr, tileId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {tileMemref, tileId});
 
     rewriter.eraseOp(op);
     return success();
