@@ -71,6 +71,15 @@ static Value buildPackedTileId(PatternRewriter &rewriter, Location loc, Value ro
   return rewriter.create<arith::OrIOp>(loc, upper, lower);
 }
 
+static Value buildLinearTileId(PatternRewriter &rewriter, Location loc, Value row,
+                               Value col, int64_t gridCols) {
+  Value rowI32 = castToI32(rewriter, loc, row);
+  Value colI32 = castToI32(rewriter, loc, col);
+  Value cGridCols = rewriter.create<arith::ConstantIntOp>(loc, gridCols, 32);
+  Value rowBase = rewriter.create<arith::MulIOp>(loc, rowI32, cGridCols);
+  return rewriter.create<arith::AddIOp>(loc, rowBase, colI32);
+}
+
 static void emitIntrinsicCall(PatternRewriter &rewriter, Location loc,
                               StringRef intrinsicName, ValueRange operands) {
 
@@ -227,7 +236,6 @@ public:
     auto subviewTy = memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
     Value tileMemref = rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
     int64_t gridCols = sliceTy.getGridShape()[1];
-    int64_t matrixWidth = gridCols * tileCols;
     Value row = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value col = adaptor.getSliceIndex();
 
@@ -236,8 +244,7 @@ public:
       col = adaptor.getIndices()[1];
     }
 
-    Value tileId = buildPackedTileId(rewriter, op.getLoc(), row, col, gridCols,
-                                     matrixWidth);
+    Value tileId = buildLinearTileId(rewriter, op.getLoc(), row, col, gridCols);
 
     emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_load", {tileMemref, tileId});
 
@@ -264,13 +271,9 @@ public:
     }
 
     int64_t gridCols = gridTy.getGridShape()[1];
-    int64_t matrixWidth = gridTy.getMatrix().getShape()[1];
-    if (ShapedType::isDynamic(matrixWidth))
-      return rewriter.notifyMatchFailure(op, "expected static matrix width for packed tile_id");
-    Value tileId = buildPackedTileId(rewriter, op.getLoc(),
+    Value tileId = buildLinearTileId(rewriter, op.getLoc(),
                                      adaptor.getIndices()[0],
-                                     adaptor.getIndices()[1], gridCols,
-                                     matrixWidth);
+                                     adaptor.getIndices()[1], gridCols);
 
     emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_compute", {tileId});
 
@@ -329,13 +332,9 @@ public:
     }
 
     int64_t gridCols = gridTy.getGridShape()[1];
-    int64_t matrixWidth = gridTy.getMatrix().getShape()[1];
-    if (ShapedType::isDynamic(matrixWidth))
-      return rewriter.notifyMatchFailure(op, "expected static matrix width for packed tile_id");
-    Value tileId = buildPackedTileId(rewriter, op.getLoc(),
+    Value tileId = buildLinearTileId(rewriter, op.getLoc(),
                                      adaptor.getIndices()[0],
-                                     adaptor.getIndices()[1], gridCols,
-                                     matrixWidth);
+                                     adaptor.getIndices()[1], gridCols);
 
     emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {tileMemref, tileId});
 
