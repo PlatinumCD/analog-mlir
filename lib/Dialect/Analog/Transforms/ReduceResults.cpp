@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/CombineArrayResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
@@ -30,18 +30,18 @@ namespace mlir {
 namespace analog {
 
 // =====--------------------------------=====
-//   CombineArrayResultsPass - Pass
+//   ReduceResultsPass - Pass
 // =====--------------------------------=====
 
-llvm::StringRef CombineArrayResultsPass::getArgument() const {
-  return "analog-combine-array-results";
+llvm::StringRef ReduceResultsPass::getArgument() const {
+  return "analog-reduce-results";
 }
 
-llvm::StringRef CombineArrayResultsPass::getDescription() const {
-  return "Insert CombineArrayResults ops";
+llvm::StringRef ReduceResultsPass::getDescription() const {
+  return "Reduce array outputs into final tensor results";
 }
 
-void CombineArrayResultsPass::runOnOperation() {
+void ReduceResultsPass::runOnOperation() {
   auto func = getOperation();
 
   std::deque<analog::MatrixGridType> gridQueue;
@@ -232,13 +232,13 @@ void CombineArrayResultsPass::runOnOperation() {
   });
 }
 
-void CombineArrayResultsPass::getDependentDialects(DialectRegistry &registry) const {
+void ReduceResultsPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
 }
 
-std::unique_ptr<mlir::Pass> createCombineArrayResultsPass() {
-  return std::make_unique<CombineArrayResultsPass>();
+std::unique_ptr<mlir::Pass> createReduceResultsPass() {
+  return std::make_unique<ReduceResultsPass>();
 }
 
 

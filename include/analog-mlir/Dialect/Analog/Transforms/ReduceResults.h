@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_COMBINE_ARRAY_RESULTS_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_COMBINE_ARRAY_RESULTS_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_REDUCE_RESULTS_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_REDUCE_RESULTS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -15,15 +15,15 @@
 namespace mlir {
 namespace analog {
 
-struct CombineArrayResultsPass
-    : public mlir::PassWrapper<CombineArrayResultsPass,
+struct ReduceResultsPass
+    : public mlir::PassWrapper<ReduceResultsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CombineArrayResultsPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReduceResultsPass)
 
   // ---- REQUIRED ----
-  CombineArrayResultsPass() = default;
-  CombineArrayResultsPass(
-      const CombineArrayResultsPass &other)
+  ReduceResultsPass() = default;
+  ReduceResultsPass(
+      const ReduceResultsPass &other)
       : PassWrapper(other) {}
 
   llvm::StringRef getArgument() const override;
@@ -33,7 +33,7 @@ struct CombineArrayResultsPass
 };
 
 
-std::unique_ptr<mlir::Pass> createCombineArrayResultsPass();
+std::unique_ptr<mlir::Pass> createReduceResultsPass();
 
 } // namespace analog
 } // namespace mlir

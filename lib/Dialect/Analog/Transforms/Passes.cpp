@@ -10,7 +10,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/GroupedPasses.h"
 
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
-#include "analog-mlir/Dialect/Analog/Transforms/CombineArrayResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
 
 #include <mlir/Pass/PassRegistry.h>
@@ -30,13 +30,14 @@ void registerAnalogPasses() {
   PassRegistration<PlaceMatricesPass>();
   PassRegistration<PlaceVectorsPass>();
   PassRegistration<ExecuteArrayPass>();
-  PassRegistration<CombineArrayResultsPass>();
+  PassRegistration<ReduceResultsPass>();
   PassRegistration<ReplaceMatmulPass>();
   
   // Pipelines
   registerMaterializePipeline();
   registerPartitionPipeline();
   registerPlacePipeline();
+  registerResolveResultsPipeline();
 }
 
 } // namespace analog

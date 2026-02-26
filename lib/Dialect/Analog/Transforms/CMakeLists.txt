@@ -9,7 +9,7 @@ add_mlir_library(MLIRAnalogTransforms
   PlaceVectors.cpp
 
   ExecuteArray.cpp
-  CombineArrayResults.cpp
+  ReduceResults.cpp
   ReplaceMatmul.cpp
 
   GroupedPasses.cpp

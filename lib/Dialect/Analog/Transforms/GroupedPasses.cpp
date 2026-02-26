@@ -6,6 +6,8 @@
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
 
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -81,3 +83,20 @@ void mlir::analog::registerPlacePipeline() {
       });
 }
 
+//===----------------------------------------------------------------------===//
+// analog-resolve-results pipeline
+//===----------------------------------------------------------------------===//
+
+struct ResolveResultsPipelineOptions
+    : public PassPipelineOptions<ResolveResultsPipelineOptions> {};
+
+void mlir::analog::registerResolveResultsPipeline() {
+  PassPipelineRegistration<ResolveResultsPipelineOptions>(
+      "analog-resolve-results",
+      "Execute analog arrays and reduce results into final tensors",
+      [](OpPassManager &pm,
+         const ResolveResultsPipelineOptions &) {
+        pm.addPass(createExecuteArrayPass());
+        pm.addPass(createReduceResultsPass());
+      });
+}

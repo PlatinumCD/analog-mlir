@@ -9,6 +9,7 @@ namespace analog {
 void registerMaterializePipeline();
 void registerPartitionPipeline();
 void registerPlacePipeline();
+void registerResolveResultsPipeline();
 
 } // namespace analog
 } // namespace mlir
