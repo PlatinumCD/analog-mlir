@@ -80,6 +80,11 @@ void CombineArrayResultsPass::runOnOperation() {
     int64_t gridRows = gridShape[0];
     int64_t gridCols = gridShape[1];
 
+    auto matrixTy = gridTy.getMatrix();
+    auto matrixShape = matrixTy.getShape();
+    int64_t matrixRows = matrixShape[0];
+    int64_t matrixCols = matrixShape[1];
+
     // Memref data
     auto memrefVal = memrefValueQueue.front();
     memrefValueQueue.pop_front();
@@ -181,12 +186,13 @@ void CombineArrayResultsPass::runOnOperation() {
       });
 
     // ================================================================
-    // Assemble final output vector: 1 x (gridRows * lane)
+    // Assemble final output vector trimmed by matrix rows: 1 x matrixRows
     // col = r * lane + j
     // ================================================================
-    int64_t outCols = gridRows * memArrayLane;
+    int64_t outCols = matrixRows;
     auto outTy = MemRefType::get({1, outCols}, f32Ty);
     Value out = builder.create<memref::AllocOp>(loc, outTy);
+    Value cMatrixRows = builder.create<arith::ConstantIndexOp>(loc, matrixRows);
 
     builder.create<scf::ForOp>(
       loc, c0, cGridRows, c1, ValueRange{},
@@ -203,8 +209,13 @@ void CombineArrayResultsPass::runOnOperation() {
             Value colOffset = b2.create<arith::MulIOp>(loc, r, cLane);
             Value col = b2.create<arith::AddIOp>(loc, colOffset, j);
 
-            // store temporary value into output buffer
-            b2.create<memref::StoreOp>(loc, v, out, ValueRange{c0, col});
+            // Skip padded rows from the final row block.
+            Value inBounds = b2.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::slt, col, cMatrixRows);
+            b2.create<scf::IfOp>(loc, inBounds, [&](OpBuilder &b3, Location loc) {
+              b3.create<memref::StoreOp>(loc, v, out, ValueRange{c0, col});
+              b3.create<scf::YieldOp>(loc);
+            });
               
             b2.create<scf::YieldOp>(loc);
           });

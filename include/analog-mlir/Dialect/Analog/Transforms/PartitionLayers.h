@@ -3,7 +3,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
-#include <llvm/Support/CommandLine.h>
 #include <memory>
 
 namespace mlir {
@@ -13,11 +12,6 @@ struct PartitionLayersPass
     : public mlir::PassWrapper<PartitionLayersPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PartitionLayersPass)
-
-  Option<int64_t> num_cores{
-      *this, "num-cores",
-      llvm::cl::desc("Number of cores to map layer groups onto"),
-      llvm::cl::init(2)};
 
   PartitionLayersPass() = default;
   PartitionLayersPass(const PartitionLayersPass &other)

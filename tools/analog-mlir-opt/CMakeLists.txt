@@ -1,7 +1,7 @@
 add_llvm_executable(analog-mlir-opt analog-mlir-opt.cpp)
 
 install(TARGETS analog-mlir-opt
-        EXPORT TorchMLIRTargets
+        EXPORT AnalogMLIRTargets
         RUNTIME DESTINATION ${LLVM_TOOLS_INSTALL_DIR}
         COMPONENT analog-mlir-opt)
 

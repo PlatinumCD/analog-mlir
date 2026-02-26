@@ -2,22 +2,12 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
-
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/Pass/Pass.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformUtils.h"
 
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
-#include <algorithm>
 #include <cstdint>
 #include <mlir/IR/Builders.h>
-#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/DialectRegistry.h>
-#include <mlir/Support/LLVM.h>
-
 
 using namespace mlir;
 
@@ -40,7 +30,6 @@ void PartitionMatrixPass::runOnOperation() {
   auto func = getOperation();
 
   func.walk([&](analog::MatrixFromTensorOp op) {
-
     Value output = op.getResult();
     auto matrixTy = llvm::dyn_cast<analog::MatrixType>(output.getType());
     if (!matrixTy) {
@@ -54,15 +43,15 @@ void PartitionMatrixPass::runOnOperation() {
     int64_t matrixRows = matrixShape[0];
     int64_t matrixCols = matrixShape[1];
 
-    int64_t numArrayRows = (matrixRows + arrayRows - 1) / arrayRows;
-    int64_t numArrayCols = (matrixCols + arrayCols - 1) / arrayCols;
+    auto tiling = detail::computeGridTiling2D(
+      matrixRows, matrixCols, arrayRows, arrayCols);
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
 
     auto arrayGridTy = analog::MatrixGridType::get(
       builder.getContext(),
-      {numArrayRows, numArrayCols},
+      {tiling.rows, tiling.cols},
       {arrayRows, arrayCols},
       matrixTy
     );
@@ -89,6 +78,5 @@ std::unique_ptr<mlir::Pass> createPartitionMatrixPass(int64_t arrayRows, int64_t
   pass->array_cols = arrayCols;
   return pass;
 }
-
 } // namespace analog
 } // namespace mlir

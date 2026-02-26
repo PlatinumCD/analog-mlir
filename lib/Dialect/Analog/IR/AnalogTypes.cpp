@@ -30,16 +30,11 @@ void AnalogDialect::registerTypes()
         >();
 }
 
-//===----------------------------------------------------------------------===//
-// MatrixType - verify
-//===----------------------------------------------------------------------===//
+namespace {
 
-mlir::LogicalResult
-mlir::analog::MatrixType::verify(
+mlir::LogicalResult verifyRank2FloatContainerType(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType) {
-
+    llvm::ArrayRef<int64_t> shape, mlir::Type elementType) {
   if (shape.empty())
     return emitError() << "shape must have at least 1 dimension";
 
@@ -52,22 +47,14 @@ mlir::analog::MatrixType::verify(
   return mlir::success();
 }
 
-//===----------------------------------------------------------------------===//
-// MatrixType - parseShapeAndElt
-//===----------------------------------------------------------------------===//
-
-mlir::ParseResult
-mlir::analog::MatrixType::parseShapeAndElt(
-    mlir::AsmParser &parser,
-    llvm::SmallVector<int64_t> &shape,
-    mlir::Type &elementType) {
-
+mlir::ParseResult parseShapeAndEltImpl(mlir::AsmParser &parser,
+                                       llvm::SmallVector<int64_t> &shape,
+                                       mlir::Type &elementType) {
   shape.clear();
 
   while (true) {
     int64_t dim;
-    mlir::OptionalParseResult maybeInt =
-        parser.parseOptionalInteger(dim);
+    mlir::OptionalParseResult maybeInt = parser.parseOptionalInteger(dim);
     if (!maybeInt.has_value())
       break;
 
@@ -83,6 +70,40 @@ mlir::analog::MatrixType::parseShapeAndElt(
   return mlir::success();
 }
 
+void printShapeAndEltImpl(mlir::AsmPrinter &printer, llvm::ArrayRef<int64_t> shape,
+                          mlir::Type elementType) {
+  for (auto d : shape)
+    printer << d << 'x';
+
+  printer.printType(elementType);
+}
+
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// MatrixType - verify
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult
+mlir::analog::MatrixType::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<int64_t> shape,
+    mlir::Type elementType) {
+  return verifyRank2FloatContainerType(emitError, shape, elementType);
+}
+
+//===----------------------------------------------------------------------===//
+// MatrixType - parseShapeAndElt
+//===----------------------------------------------------------------------===//
+
+mlir::ParseResult
+mlir::analog::MatrixType::parseShapeAndElt(
+    mlir::AsmParser &parser,
+    llvm::SmallVector<int64_t> &shape,
+    mlir::Type &elementType) {
+  return parseShapeAndEltImpl(parser, shape, elementType);
+}
+
 //===----------------------------------------------------------------------===//
 // MatrixType - printShapeAndElt
 //===----------------------------------------------------------------------===//
@@ -92,11 +113,7 @@ mlir::analog::MatrixType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
-
-  for (auto d : shape)
-    printer << d << 'x';
-
-  printer.printType(elementType);
+  printShapeAndEltImpl(printer, shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -137,17 +154,7 @@ mlir::analog::VectorType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
-
-  if (shape.empty())
-    return emitError() << "shape must have at least 1 dimension";
-
-  if (!elementType || !mlir::isa<mlir::FloatType>(elementType))
-    return emitError() << "elementType must be a float type";
-
-  if (shape.size() != 2)
-    return emitError() << "expected rank-2 matrix, got rank " << shape.size();
-
-  return mlir::success();
+  return verifyRank2FloatContainerType(emitError, shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -159,26 +166,7 @@ mlir::analog::VectorType::parseShapeAndElt(
     mlir::AsmParser &parser,
     llvm::SmallVector<int64_t> &shape,
     mlir::Type &elementType) {
-
-  shape.clear();
-
-  while (true) {
-    int64_t dim;
-    mlir::OptionalParseResult maybeInt =
-        parser.parseOptionalInteger(dim);
-    if (!maybeInt.has_value())
-      break;
-
-    shape.push_back(dim);
-
-    if (parser.parseXInDimensionList())
-      return mlir::failure();
-  }
-
-  if (parser.parseType(elementType))
-    return mlir::failure();
-
-  return mlir::success();
+  return parseShapeAndEltImpl(parser, shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -190,11 +178,7 @@ mlir::analog::VectorType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
-
-  for (auto d : shape)
-    printer << d << 'x';
-
-  printer.printType(elementType);
+  printShapeAndEltImpl(printer, shape, elementType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -237,14 +221,6 @@ mlir::analog::MatrixGridType::verify(
     llvm::ArrayRef<int64_t> gridShape,
     llvm::ArrayRef<int64_t> arrayShape,
     mlir::analog::MatrixType matrix) {
-
-  if (arrayShape.size() != 2) {
-    return emitError() << "array_shape must have exactly 2 dimensions";
-  }
-
-  if (arrayShape[0] <= 0 || arrayShape[1] <= 0) {
-    return emitError() << "array_shape dimensions must be positive";
-  }
 
   if (arrayShape.size() != 2) {
     return emitError() << "array_shape must have exactly 2 dimensions";

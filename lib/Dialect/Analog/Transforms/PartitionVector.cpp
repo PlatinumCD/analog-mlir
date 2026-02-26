@@ -2,22 +2,14 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformUtils.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/Pass/Pass.h"
 
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
-#include <algorithm>
 #include <cstdint>
 #include <mlir/IR/Builders.h>
-#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/DialectRegistry.h>
-#include <mlir/Support/LLVM.h>
-
 
 using namespace mlir;
 
@@ -33,7 +25,7 @@ llvm::StringRef PartitionVectorPass::getArgument() const {
 }
 
 llvm::StringRef PartitionVectorPass::getDescription() const {
-  return "Partition analog vectors into varray-slice views derived from tiling geometry";
+  return "Partition analog vectors into vector-slice views derived from tiling geometry";
 }
 
 void PartitionVectorPass::runOnOperation() {
@@ -59,32 +51,32 @@ void PartitionVectorPass::runOnOperation() {
       return;
     }
 
-    Value matrixTransposeInput = matmulOp.getInputs()[1]; 
-    auto matrixTansposeInputTy = llvm::dyn_cast<RankedTensorType>(matrixTransposeInput.getType());
-    if (!matrixTansposeInputTy) {
+    Value matrixTransposeInput = matmulOp.getInputs()[1];
+    auto matrixTransposeInputTy = llvm::dyn_cast<RankedTensorType>(matrixTransposeInput.getType());
+    if (!matrixTransposeInputTy) {
       return;
     }
 
-    auto matrixTransposeShape = matrixTansposeInputTy.getShape();
+    auto matrixTransposeShape = matrixTransposeInputTy.getShape();
     int64_t matrixRows = matrixTransposeShape[1];
     int64_t matrixCols = matrixTransposeShape[0];
 
-    int64_t numArrayRows = (matrixRows + arrayRows - 1) / arrayRows;
-    int64_t numArrayCols = (matrixCols + arrayCols - 1) / arrayCols;
+    auto tiling = detail::computeGridTiling2D(
+      matrixRows, matrixCols, arrayRows, arrayCols);
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
 
-    auto varraySliceTy = analog::VectorSliceType::get(
+    auto vectorSliceTy = analog::VectorSliceType::get(
       builder.getContext(),
-      {numArrayRows, numArrayCols},
+      {tiling.rows, tiling.cols},
       {arrayRows, arrayCols},
       vectorTy
     );
 
     builder.create<analog::VectorPartitionOp>(
       op.getLoc(),
-      varraySliceTy,
+      vectorSliceTy,
       op.getResult()
     );
   });
@@ -104,6 +96,5 @@ std::unique_ptr<mlir::Pass> createPartitionVectorPass(int64_t arrayRows, int64_t
   pass->array_cols = arrayCols;
   return pass;
 }
-
 } // namespace analog
 } // namespace mlir
