@@ -54,7 +54,7 @@ It extends MLIR with an `analog` dialect and a sequence of transformation passes
 | `PlaceMatricesPass` | MatrixGrid → placed partitions | `Analog_MatrixGridType` |
 | `PlaceVectorsPass` | VectorSlice → placed partitions | `Analog_VectorSliceType` |
 | `ExecuteArrayPass` | Issue accelerator execution | Placed arrays |
-| `CombineArrayResultsPass` | Reduce / writeback results | Array outputs |
+| `ReduceResultsPass` | Reduce / writeback results | Array outputs |
 
 ---
 
