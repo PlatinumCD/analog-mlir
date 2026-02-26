@@ -381,7 +381,8 @@ static void convertMatrixRegionToFunctionBody(func::FuncOp forward,
   }
 
   OpBuilder b(exec);
-  b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(), TypeRange{}, ValueRange{});
+  auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(), TypeRange{}, ValueRange{});
+  call->setAttr("weight-id", b.getI64IntegerAttr(id));
   exec.erase();
 }
 
@@ -465,6 +466,7 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
   OpBuilder b(exec);
   auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(),
                                      exec.getResultTypes(), ValueRange{layerInput});
+  call->setAttr("layer-id", b.getI64IntegerAttr(id));
   exec.replaceAllUsesWith(call.getResults());
   exec.erase();
 }
