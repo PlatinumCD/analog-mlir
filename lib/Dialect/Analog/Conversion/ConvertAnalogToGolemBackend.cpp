@@ -364,7 +364,7 @@ void ConvertAnalogToGolemBackendPass::getDependentDialects(
 
 void ConvertAnalogToGolemBackendPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
-  mlir::func::FuncOp func = getOperation();
+  ModuleOp module = getOperation();
 
   TypeConverter typeConverter;
   typeConverter.addConversion([](Type type) { return type; });
@@ -393,7 +393,7 @@ void ConvertAnalogToGolemBackendPass::runOnOperation() {
   target.addIllegalDialect<analog::AnalogDialect>();
   target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-  if (failed(applyPartialConversion(func, target, std::move(patterns))))
+  if (failed(applyPartialConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }
 

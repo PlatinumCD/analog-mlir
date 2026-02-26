@@ -1,7 +1,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/Passes.h"
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PartitionLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IsolateLayers.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionMatrix.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
@@ -24,7 +24,7 @@ void registerAnalogPasses() {
   // Leaf passes ONLY
   PassRegistration<MaterializeMatrixFromTensorPass>();
   PassRegistration<MaterializeVectorFromTensorPass>();
-  PassRegistration<PartitionLayersPass>();
+  PassRegistration<IsolateLayersPass>();
   PassRegistration<PartitionMatrixPass>();
   PassRegistration<PartitionVectorPass>();
   PassRegistration<PlaceMatricesPass>();

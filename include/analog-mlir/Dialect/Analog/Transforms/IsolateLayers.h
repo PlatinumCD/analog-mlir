@@ -1,5 +1,5 @@
-#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PARTITION_LAYERS_H
-#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_PARTITION_LAYERS_H
+#ifndef ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_ISOLATE_LAYERS_H
+#define ANALOG_MLIR_DIALECT_ANALOG_TRANSFORMS_ISOLATE_LAYERS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
@@ -8,13 +8,13 @@
 namespace mlir {
 namespace analog {
 
-struct PartitionLayersPass
-    : public mlir::PassWrapper<PartitionLayersPass,
+struct IsolateLayersPass
+    : public mlir::PassWrapper<IsolateLayersPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PartitionLayersPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(IsolateLayersPass)
 
-  PartitionLayersPass() = default;
-  PartitionLayersPass(const PartitionLayersPass &other)
+  IsolateLayersPass() = default;
+  IsolateLayersPass(const IsolateLayersPass &other)
       : PassWrapper(other) {}
 
   llvm::StringRef getArgument() const override;
@@ -23,7 +23,7 @@ struct PartitionLayersPass
   void runOnOperation() override;
 };
 
-std::unique_ptr<mlir::Pass> createPartitionLayersPass();
+std::unique_ptr<mlir::Pass> createIsolateLayersPass();
 
 } // namespace analog
 } // namespace mlir

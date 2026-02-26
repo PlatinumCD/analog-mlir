@@ -1,7 +1,7 @@
 #ifndef ANALOG_MLIR_DIALECT_ANALOG_CONVERSION_CONVERT_ANALOG_TO_LOWER_H
 #define ANALOG_MLIR_DIALECT_ANALOG_CONVERSION_CONVERT_ANALOG_TO_LOWER_H
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <mlir/IR/DialectRegistry.h>
@@ -12,7 +12,7 @@ namespace analog {
 
 struct ConvertAnalogToGolemBackendPass
     : public mlir::PassWrapper<ConvertAnalogToGolemBackendPass,
-                               mlir::OperationPass<mlir::func::FuncOp>> {
+                               mlir::OperationPass<mlir::ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertAnalogToGolemBackendPass)
 
   llvm::StringRef getArgument() const override;

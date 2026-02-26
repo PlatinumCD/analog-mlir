@@ -2,7 +2,7 @@ add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
   MaterializeMatrixFromTensor.cpp
   MaterializeVectorFromTensor.cpp
-  PartitionLayers.cpp
+  IsolateLayers.cpp
   PartitionMatrix.cpp
   PartitionVector.cpp
   PlaceMatrices.cpp

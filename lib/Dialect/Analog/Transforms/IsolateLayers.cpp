@@ -1,4 +1,4 @@
-#include "analog-mlir/Dialect/Analog/Transforms/PartitionLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IsolateLayers.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -484,15 +484,15 @@ static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
 
 } // namespace
 
-llvm::StringRef PartitionLayersPass::getArgument() const {
-  return "analog-partition-layers";
+llvm::StringRef IsolateLayersPass::getArgument() const {
+  return "analog-isolate-layers-and-weights";
 }
 
-llvm::StringRef PartitionLayersPass::getDescription() const {
-  return "Outline matrix initialization and layer routines into helper functions";
+llvm::StringRef IsolateLayersPass::getDescription() const {
+  return "Isolate layer routines and weight-initialization routines into helper functions";
 }
 
-void PartitionLayersPass::getDependentDialects(DialectRegistry &registry) const {
+void IsolateLayersPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<mlir::arith::ArithDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::cf::ControlFlowDialect>();
@@ -500,7 +500,7 @@ void PartitionLayersPass::getDependentDialects(DialectRegistry &registry) const 
   registry.insert<mlir::scf::SCFDialect>();
 }
 
-void PartitionLayersPass::runOnOperation() {
+void IsolateLayersPass::runOnOperation() {
   func::FuncOp func = getOperation();
   OpChainList matrixChains;
   OpChainList layerRoutineChains;
@@ -515,8 +515,8 @@ void PartitionLayersPass::runOnOperation() {
   convertLayerRegionsToFunctionBodies(func);
 }
 
-std::unique_ptr<mlir::Pass> createPartitionLayersPass() {
-  return std::make_unique<PartitionLayersPass>();
+std::unique_ptr<mlir::Pass> createIsolateLayersPass() {
+  return std::make_unique<IsolateLayersPass>();
 }
 
 } // namespace analog
