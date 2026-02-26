@@ -9,6 +9,7 @@ add_mlir_library(MLIRAnalogTransforms
   PlaceVectors.cpp
 
   ExecuteArray.cpp
+  DispatchWeights.cpp
   ReduceResults.cpp
   ReplaceMatmul.cpp
 
@@ -17,10 +18,12 @@ add_mlir_library(MLIRAnalogTransforms
   DEPENDS
   MLIRFuncDialect
   MLIRArithDialect
+  MLIRSCFDialect
 
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRPass
   MLIRFuncDialect
   MLIRArithDialect
+  MLIRSCFDialect
 )
