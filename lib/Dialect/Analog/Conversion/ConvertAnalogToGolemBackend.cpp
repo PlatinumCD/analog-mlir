@@ -326,6 +326,11 @@ public:
                            .create<memref::SubViewOp>(op.getLoc(), adaptor.getDest(), offsets, sizes, strides)
                            .getResult();
 
+    auto scratchTy = MemRefType::get({1, 1, arrayRows}, destTy.getElementType());
+    auto alignment = rewriter.getI64IntegerAttr(64);
+    Value scratch = rewriter.create<memref::AllocOp>(op.getLoc(), scratchTy,
+                                                     ValueRange{}, alignment);
+
     auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getGrid().getType());
     if (!gridTy) {
       return rewriter.notifyMatchFailure(op, "expected analog.matrix.grid input type");
@@ -336,7 +341,9 @@ public:
                                      adaptor.getIndices()[0],
                                      adaptor.getIndices()[1], gridCols);
 
-    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store", {arrayMemref, arrayId});
+    emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store",
+                      {scratch, arrayId});
+    rewriter.create<memref::CopyOp>(op.getLoc(), scratch, arrayMemref);
 
     rewriter.eraseOp(op);
     return success();
