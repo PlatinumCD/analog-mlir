@@ -1,24 +1,61 @@
 #include "thread_mapping.h"
 
+#ifndef NUM_LAYERS
+#define NUM_LAYERS 1
+#endif
+
+#if NUM_LAYERS <= 0
+#error "NUM_LAYERS must be > 0"
+#endif
+
+static thread_local int32_t currentWorkerSlot = -1;
+
+/*
+  mapTaskToWorkerSlot(int32_t taskId)
+
+  Shared mapping policy used by both weight and layer dispatch shims.
+  Update this single function to change worker assignment behavior.
+*/
+int32_t mapTaskToWorkerSlot(int32_t taskId) {
+  int32_t slot = taskId % static_cast<int32_t>(NUM_LAYERS);
+  if (slot < 0) {
+    slot += static_cast<int32_t>(NUM_LAYERS);
+  }
+  return slot;
+}
+
 /*
   mapWeightToWorkerSlot(int32_t weightId)
 
-  Determines the logical worker slot responsible for executing a given
-  weight. This function encodes the runtime’s orchestration policy,
-  mapping weight identifiers to specific worker indices.
-
-  The current implementation is a fixed example mapping used for
-  demonstration and testing purposes.
+  Weight-specific view over the shared task mapping policy.
 */
 int32_t mapWeightToWorkerSlot(int32_t weightId) {
-  // Example orchestration:
-  //   weight 0 -> worker 2
-  //   weight 1 -> worker 1
-  if (weightId == 0) {
-    return 2;
-  }
-  if (weightId == 1) {
-    return 1;
-  }
-  return 1; // default fallback
+  return mapTaskToWorkerSlot(weightId);
+}
+
+/*
+  mapLayerToWorkerSlot(int32_t layerId)
+
+  Layer-specific view over the shared task mapping policy.
+*/
+int32_t mapLayerToWorkerSlot(int32_t layerId) {
+  return mapTaskToWorkerSlot(layerId);
+}
+
+/*
+  setCurrentWorkerSlot(int32_t workerSlot)
+
+  Records the logical worker slot for the current thread.
+*/
+void setCurrentWorkerSlot(int32_t workerSlot) {
+  currentWorkerSlot = workerSlot;
+}
+
+/*
+  getCurrentWorkerSlot()
+
+  Returns the logical worker slot for the current thread.
+*/
+int32_t getCurrentWorkerSlot() {
+  return currentWorkerSlot;
 }

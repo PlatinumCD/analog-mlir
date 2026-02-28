@@ -1,35 +1,49 @@
+#include <cstdint>
+#include <cstdio>
+
 extern "C" void analog_init_weights();
 
+struct Tensor2DF32 {
+  float *allocated;
+  float *aligned;
+  int64_t offset;
+  int64_t sizes[2];
+  int64_t strides[2];
+};
+
+extern "C" Tensor2DF32 forward(float *allocated, float *aligned, int64_t offset,
+                               int64_t size0, int64_t size1, int64_t stride0,
+                               int64_t stride1);
+
+static void printTensor(const char *label, const Tensor2DF32 &tensor) {
+  std::printf("%s (%lld x %lld)\n",
+              label,
+              static_cast<long long>(tensor.sizes[0]),
+              static_cast<long long>(tensor.sizes[1]));
+
+  for (int64_t row = 0; row < tensor.sizes[0]; ++row) {
+    std::printf("  [");
+    for (int64_t col = 0; col < tensor.sizes[1]; ++col) {
+      int64_t index = tensor.offset + row * tensor.strides[0] +
+                      col * tensor.strides[1];
+      std::printf("%s%.6f",
+                  col == 0 ? "" : ", ",
+                  tensor.aligned[index]);
+    }
+    std::printf("]\n");
+  }
+}
 
 int main() {
-  
-  //
-  // Example MLIR-generated entry point:
-  //
-  //   func.func @analog_init_weights() {
-  //     %c0_i32 = arith.constant 0 : i32
-  //     call @analog_dispatch_weight(%c0_i32) {"weight-id" = 0 : i64} : (i32) -> ()
-  //
-  //     %c1_i32 = arith.constant 1 : i32
-  //     call @analog_dispatch_weight(%c1_i32) {"weight-id" = 1 : i64} : (i32) -> ()
-  //
-  //     call @analog_wait_weights() : () -> ()
-  //     return
-  //   }
-  //
-  // analog_init_weights() is generated from MLIR and serves as the
-  // orchestration entry point for weight initialization.
-  //
-  // The MLIR layer specifies *what* weights must be executed and in
-  // what order. The C++ runtime layer (analog_dispatch_weight and
-  // analog_wait_weights) defines *how* and *where* those weights are
-  // executed (e.g., pthreads, worker mapping, scheduling policy).
-  //
-  // This separation forms the ABI boundary between the compiler-
-  // generated analog program and the host runtime.
-  //
+  alignas(64) float inputData[8] = {
+      1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
+  };
+
   analog_init_weights();
 
+  Tensor2DF32 output =
+      forward(inputData, inputData, 0, 1, 8, 8, 1);
 
+  printTensor("forward output", output);
   return 0;
 }

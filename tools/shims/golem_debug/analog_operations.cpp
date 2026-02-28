@@ -1,15 +1,18 @@
 #include "weight_emulator.h"
+#include "thread_mapping.h"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
-#include <mutex>
 #include <thread>
 #include <vector>
 
 #include <sched.h>
+
+#ifndef NUM_LAYERS
+#define NUM_LAYERS 1
+#endif
 
 #ifndef GOLEM_DEBUG_NUM_ARRAYS
 #define GOLEM_DEBUG_NUM_ARRAYS 2
@@ -25,25 +28,24 @@
 
 using analog::shims::ComputeArray;
 
-static std::vector<ComputeArray> arrays;
-static std::vector<std::unique_ptr<std::mutex>> arrayLocks;
-static std::once_flag initOnce;
-
-
 /*
-  initializeArrays()
+  createWorkerLocalArrays()
 
-  Lazily constructs the fixed set of simulated analog arrays used by
-  the debug shim layer. Array ids are 0-based to match the packed-id
-  convention used by the lowered MLIR debug shim ABI.
+  Builds one local array bank per worker slot. Each worker gets its own
+  0-based array namespace.
 */
-static void initializeArrays() {
-  arrays.reserve(GOLEM_DEBUG_NUM_ARRAYS);
-  arrayLocks.reserve(GOLEM_DEBUG_NUM_ARRAYS);
-  for (int32_t i = 0; i < GOLEM_DEBUG_NUM_ARRAYS; ++i) {
-    arrays.emplace_back(GOLEM_DEBUG_ARRAY_ROWS, GOLEM_DEBUG_ARRAY_COLS, i);
-    arrayLocks.push_back(std::make_unique<std::mutex>());
+static std::vector<ComputeArray> createWorkerLocalArrays() {
+  std::vector<ComputeArray> arrays;
+  arrays.reserve(static_cast<size_t>(NUM_LAYERS) *
+                 static_cast<size_t>(GOLEM_DEBUG_NUM_ARRAYS));
+  for (int32_t workerSlot = 0; workerSlot < static_cast<int32_t>(NUM_LAYERS);
+       ++workerSlot) {
+    for (int32_t arrayId = 0; arrayId < GOLEM_DEBUG_NUM_ARRAYS; ++arrayId) {
+      arrays.emplace_back(GOLEM_DEBUG_ARRAY_ROWS, GOLEM_DEBUG_ARRAY_COLS,
+                          arrayId);
+    }
   }
+  return arrays;
 }
 
 
@@ -62,6 +64,43 @@ static int logCoreAndSleep(const char *fnName) {
 
 
 /*
+  getWorkerLocalArray(int32_t rawArrayId)
+
+  Resolves the current worker-local array instance for a packed/raw id.
+*/
+static ComputeArray &getWorkerLocalArray(int32_t rawArrayId,
+                                         int32_t &workerSlot,
+                                         int32_t &arrayId) {
+  static std::vector<ComputeArray> arrays = createWorkerLocalArrays();
+
+  workerSlot = getCurrentWorkerSlot();
+  if (workerSlot < 0 || workerSlot >= static_cast<int32_t>(NUM_LAYERS)) {
+    std::fprintf(stderr,
+                 "[operation shim] worker slot %d is invalid for raw=%d (valid: 0..%d)\n",
+                 static_cast<int>(workerSlot),
+                 static_cast<int>(rawArrayId),
+                 static_cast<int>(NUM_LAYERS - 1));
+    std::abort();
+  }
+
+  arrayId = ComputeArray::arrayIndexFromPackedId(rawArrayId);
+  if (arrayId < 0 || arrayId >= GOLEM_DEBUG_NUM_ARRAYS) {
+    std::fprintf(stderr,
+                 "[operation shim] array id %d out of range (raw=%d, valid: 0..%d)\n",
+                 static_cast<int>(arrayId),
+                 static_cast<int>(rawArrayId),
+                 static_cast<int>(GOLEM_DEBUG_NUM_ARRAYS - 1));
+    std::abort();
+  }
+
+  size_t flatIndex = static_cast<size_t>(workerSlot) *
+                         static_cast<size_t>(GOLEM_DEBUG_NUM_ARRAYS) +
+                     static_cast<size_t>(arrayId);
+  return arrays[flatIndex];
+}
+
+
+/*
   golem_debug_mvm_set(void* data, int32_t packedArrayId)
 
   Debug shim implementation for the analog matrix-programming operation.
@@ -74,18 +113,10 @@ static int logCoreAndSleep(const char *fnName) {
 extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
   int core = logCoreAndSleep("mvm.set");
 
-  std::call_once(initOnce, initializeArrays);
-  int32_t arrayId = ComputeArray::arrayIndexFromPackedId(packedArrayId);
-  if (arrayId < 0 || arrayId >= GOLEM_DEBUG_NUM_ARRAYS) {
-    std::fprintf(stderr,
-                 "[operation shim] array id %d out of range (valid: 0..%d)\n",
-                 static_cast<int>(arrayId),
-                 static_cast<int>(GOLEM_DEBUG_NUM_ARRAYS - 1));
-    std::abort();
-  }
-
-  std::lock_guard<std::mutex> lock(*arrayLocks[static_cast<size_t>(arrayId)]);
-  ComputeArray &array = arrays[static_cast<size_t>(arrayId)];
+  int32_t workerSlot = -1;
+  int32_t arrayId = -1;
+  ComputeArray &array =
+      getWorkerLocalArray(packedArrayId, workerSlot, arrayId);
   float *src = static_cast<float *>(data);
 
   const int32_t rows = array.rows();
@@ -96,13 +127,90 @@ extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
   array.setMatrixFromRowMajor(src, srcStride);
 
   std::printf(
-      "[operation shim] mvm.set   ptr=%p array=%d raw=%d matrix_width=%d rows=%d cols=%d core=%d\n",
+      "[operation shim] mvm.set   ptr=%p worker=%d array=%d raw=%d matrix_width=%d rows=%d cols=%d core=%d\n",
       data,
-      array.arrayId(),
+      workerSlot,
+      arrayId,
       static_cast<int>(packedArrayId),
       srcStride,
       rows,
       cols,
       core);
   array.dumpMatrix("matrix");
+}
+
+
+/*
+  golem_debug_mvm_load(void* data, int32_t rawArrayId)
+
+  Debug shim implementation for the analog vector-load operation.
+*/
+extern "C" void golem_debug_mvm_load(void *data, int32_t rawArrayId) {
+  int core = logCoreAndSleep("mvm.load");
+
+  int32_t workerSlot = -1;
+  int32_t arrayId = -1;
+  ComputeArray &array = getWorkerLocalArray(rawArrayId, workerSlot, arrayId);
+  float *src = static_cast<float *>(data);
+
+  array.loadVector(src);
+
+  std::printf(
+      "[operation shim] mvm.load  ptr=%p worker=%d array=%d raw=%d cols=%d core=%d\n",
+      data,
+      workerSlot,
+      arrayId,
+      static_cast<int>(rawArrayId),
+      array.cols(),
+      core);
+  array.dumpInputVector("input");
+}
+
+
+/*
+  golem_debug_mvm_compute(int32_t rawArrayId)
+
+  Debug shim implementation for the analog compute operation.
+*/
+extern "C" void golem_debug_mvm_compute(int32_t rawArrayId) {
+  int core = logCoreAndSleep("mvm.compute");
+
+  int32_t workerSlot = -1;
+  int32_t arrayId = -1;
+  ComputeArray &array = getWorkerLocalArray(rawArrayId, workerSlot, arrayId);
+
+  array.compute();
+
+  std::printf("[operation shim] mvm.compute worker=%d array=%d raw=%d core=%d\n",
+              workerSlot,
+              arrayId,
+              static_cast<int>(rawArrayId),
+              core);
+  array.dumpOutputVector("output");
+}
+
+
+/*
+  golem_debug_mvm_store(void* data, int32_t rawArrayId)
+
+  Debug shim implementation for the analog output-store operation.
+*/
+extern "C" void golem_debug_mvm_store(void *data, int32_t rawArrayId) {
+  int core = logCoreAndSleep("mvm.store");
+
+  int32_t workerSlot = -1;
+  int32_t arrayId = -1;
+  ComputeArray &array = getWorkerLocalArray(rawArrayId, workerSlot, arrayId);
+  float *dst = static_cast<float *>(data);
+
+  array.storeOutput(dst);
+
+  std::printf(
+      "[operation shim] mvm.store ptr=%p worker=%d array=%d raw=%d rows=%d core=%d\n",
+      data,
+      workerSlot,
+      arrayId,
+      static_cast<int>(rawArrayId),
+      array.rows(),
+      core);
 }

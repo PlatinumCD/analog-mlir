@@ -39,7 +39,9 @@ static void *weightThread(void *context) {
               task->workerSlot,
               task->weightId);
 
+  setCurrentWorkerSlot(task->workerSlot);
   analog_run_weight(task->weightId);
+  setCurrentWorkerSlot(-1);
 
   delete task;
   return nullptr;
@@ -64,7 +66,7 @@ static void *weightThread(void *context) {
 */
 extern "C" void analog_dispatch_weight(int32_t weightId) {
   pthread_t thread;
-  int32_t workerSlot = mapWeightToWorkerSlot(weightId);
+  int32_t workerSlot = mapTaskToWorkerSlot(weightId);
   WeightTask *task = new WeightTask{weightId, workerSlot};
 
   int rc = pthread_create(&thread, nullptr, &weightThread, task);

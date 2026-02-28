@@ -9,6 +9,7 @@ add_mlir_library(MLIRAnalogTransforms
   PlaceVectors.cpp
 
   ExecuteArray.cpp
+  DispatchLayers.cpp
   DispatchWeights.cpp
   ReduceResults.cpp
   ReplaceMatmul.cpp

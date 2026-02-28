@@ -10,6 +10,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/GroupedPasses.h"
 
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
+#include "analog-mlir/Dialect/Analog/Transforms/DispatchLayers.h"
 #include "analog-mlir/Dialect/Analog/Transforms/DispatchWeights.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
@@ -31,6 +32,7 @@ void registerAnalogPasses() {
   PassRegistration<PlaceMatricesPass>();
   PassRegistration<PlaceVectorsPass>();
   PassRegistration<ExecuteArrayPass>();
+  PassRegistration<DispatchLayersPass>();
   PassRegistration<DispatchWeightsPass>();
   PassRegistration<ReduceResultsPass>();
   PassRegistration<ReplaceMatmulPass>();
