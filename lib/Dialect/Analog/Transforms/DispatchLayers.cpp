@@ -1,15 +1,13 @@
 #include "analog-mlir/Dialect/Analog/Transforms/DispatchLayers.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectRegistry.h"
 
 #include "llvm/ADT/SmallVector.h"
-
-#include <functional>
 
 using namespace mlir;
 
@@ -77,7 +75,7 @@ static func::FuncOp createLayerDispatcher(ModuleOp module,
   fn.setPublic();
 
   Block *entry = fn.addEntryBlock();
-  OpBuilder body = OpBuilder::atBlockEnd(entry);
+  Region &bodyRegion = fn.getBody();
   Value inputArg = entry->getArgument(0);
   Value layerIdArg = entry->getArgument(1);
   Location loc = fn.getLoc();
@@ -93,38 +91,51 @@ static func::FuncOp createLayerDispatcher(ModuleOp module,
     return builder.create<tensor::CastOp>(loc, dynResultTy, call.getResult(0));
   };
 
-  std::function<Value(OpBuilder &, size_t)> buildChain;
-  buildChain = [&](OpBuilder &builder, size_t pos) -> Value {
-    const LayerCallInfo &info = layers[pos];
-    Value idConst = builder.create<arith::ConstantIntOp>(loc, info.layerId, 32);
-    Value isMatch = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                  layerIdArg, idConst);
-    auto ifOp = builder.create<scf::IfOp>(loc, TypeRange{dynResultTy}, isMatch,
-                                          /*withElseRegion=*/true);
+  SmallVector<Block *> caseBlocks;
+  caseBlocks.reserve(layers.size());
+  for (size_t i = 0; i < layers.size(); ++i) {
+    caseBlocks.push_back(b.createBlock(&bodyRegion));
+  }
 
-    {
-      OpBuilder thenBuilder = OpBuilder::atBlockEnd(&ifOp.getThenRegion().front());
-      Value thenValue = emitCallAsDyn(thenBuilder, info);
-      thenBuilder.create<scf::YieldOp>(loc, ValueRange{thenValue});
-    }
+  Block *defaultBlock = b.createBlock(&bodyRegion);
+  Block *exitBlock = b.createBlock(&bodyRegion);
+  exitBlock->addArgument(dynResultTy, loc);
 
-    {
-      OpBuilder elseBuilder = OpBuilder::atBlockEnd(&ifOp.getElseRegion().front());
-      Value elseValue;
-      if (pos + 1 == layers.size()) {
-        // Fallback for unknown layer-id: execute the last known layer.
-        elseValue = emitCallAsDyn(elseBuilder, info);
-      } else {
-        elseValue = buildChain(elseBuilder, pos + 1);
-      }
-      elseBuilder.create<scf::YieldOp>(loc, ValueRange{elseValue});
-    }
+  OpBuilder entryBuilder = OpBuilder::atBlockEnd(entry);
+  SmallVector<int32_t> caseValues;
+  caseValues.reserve(layers.size());
+  SmallVector<ValueRange> caseOperands(layers.size(), ValueRange{});
+  for (const LayerCallInfo &info : layers) {
+    caseValues.push_back(static_cast<int32_t>(info.layerId));
+  }
+  entryBuilder.create<cf::SwitchOp>(loc, layerIdArg, defaultBlock, ValueRange{},
+                                    caseValues, caseBlocks, caseOperands);
 
-    return ifOp.getResult(0);
+  for (auto [info, caseBlock] : llvm::zip(layers, caseBlocks)) {
+    OpBuilder caseBuilder = OpBuilder::atBlockEnd(caseBlock);
+    Value result = emitCallAsDyn(caseBuilder, info);
+    caseBuilder.create<cf::BranchOp>(loc, exitBlock, ValueRange{result});
+  }
+
+  auto emitInvalidLayerTrap = [&](OpBuilder &builder) {
+    Value isValid = builder.create<arith::ConstantIntOp>(loc, 0, 1);
+    builder.create<cf::AssertOp>(loc, isValid, "invalid analog layer-id");
   };
 
-  Value result = buildChain(body, 0);
-  body.create<func::ReturnOp>(loc, ValueRange{result});
+  {
+    OpBuilder defaultBuilder = OpBuilder::atBlockEnd(defaultBlock);
+    emitInvalidLayerTrap(defaultBuilder);
+    Value fallback = inputArg;
+    if (inputArg.getType() == dynResultTy) {
+      defaultBuilder.create<cf::BranchOp>(loc, exitBlock, ValueRange{fallback});
+    } else {
+      fallback = defaultBuilder.create<tensor::CastOp>(loc, dynResultTy, inputArg);
+      defaultBuilder.create<cf::BranchOp>(loc, exitBlock, ValueRange{fallback});
+    }
+  }
+
+  OpBuilder exitBuilder = OpBuilder::atBlockEnd(exitBlock);
+  exitBuilder.create<func::ReturnOp>(loc, ValueRange{exitBlock->getArgument(0)});
   return fn;
 }
 
@@ -141,8 +152,8 @@ llvm::StringRef DispatchLayersPass::getDescription() const {
 
 void DispatchLayersPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::func::FuncDialect>();
-  registry.insert<mlir::scf::SCFDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
 }
 
