@@ -232,11 +232,9 @@ public:
         });
 
     int64_t gridCols = gridTy.getGridShape()[1];
-    int64_t matrixWidth = matrixTy.getShape()[1];
-    if (ShapedType::isDynamic(matrixWidth))
-      matrixWidth = gridTy.getMatrix().getShape()[1];
-    if (ShapedType::isDynamic(matrixWidth))
-      return rewriter.notifyMatchFailure(op, "expected static matrix width for packed array_id");
+    // The hardware matrix-programming path consumes a contiguous physical tile.
+    // After padding, the host buffer stride is always the full array width.
+    int64_t matrixWidth = arrayCols;
     Value arrayId = buildPackedArrayId(rewriter, op.getLoc(), adaptor.getRowIndex(),
                                      adaptor.getColIndex(), gridCols,
                                      matrixWidth);
