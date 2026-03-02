@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -174,17 +175,59 @@ public:
     Value rowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getRowIndex(), cArrayRows);
     Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getColIndex(), cArrayCols);
 
-    SmallVector<OpFoldResult> offsets{rowOffset, colOffset};
-    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(arrayRows), rewriter.getIndexAttr(arrayCols)};
-    SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-
     auto fullMemrefTy = MemRefType::get(matrixTy.getShape(), matrixTy.getElementType());
     Value fullMemref =
         rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
-    auto subviewTy =
-        memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
-    Value arrayMemref =
-        rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
+    auto scratchTy = MemRefType::get({arrayRows, arrayCols}, matrixTy.getElementType());
+    Value arrayMemref = rewriter.create<memref::AllocOp>(op.getLoc(), scratchTy);
+
+    TypedAttr zeroAttr = rewriter.getZeroAttr(matrixTy.getElementType());
+    if (!zeroAttr) {
+      return rewriter.notifyMatchFailure(op, "expected zero-initializable matrix element type");
+    }
+
+    Value zero = rewriter.create<arith::ConstantOp>(op.getLoc(), matrixTy.getElementType(), zeroAttr);
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+
+    rewriter.create<scf::ForOp>(
+        op.getLoc(), c0, cArrayRows, c1, ValueRange{},
+        [&](OpBuilder &rowBuilder, Location rowLoc, Value rowIdx, ValueRange) {
+          rowBuilder.create<scf::ForOp>(
+              rowLoc, c0, cArrayCols, c1, ValueRange{},
+              [&](OpBuilder &colBuilder, Location colLoc, Value colIdx, ValueRange) {
+                colBuilder.create<memref::StoreOp>(
+                    colLoc, zero, arrayMemref, ValueRange{rowIdx, colIdx});
+                colBuilder.create<scf::YieldOp>(colLoc);
+              });
+          rowBuilder.create<scf::YieldOp>(rowLoc);
+        });
+
+    Value matrixRows = rewriter.create<memref::DimOp>(op.getLoc(), fullMemref, 0);
+    Value matrixCols = rewriter.create<memref::DimOp>(op.getLoc(), fullMemref, 1);
+    Value remainingRows = rewriter.create<arith::SubIOp>(op.getLoc(), matrixRows, rowOffset);
+    Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), matrixCols, colOffset);
+    Value clampRows = rewriter.create<arith::CmpIOp>(
+        op.getLoc(), arith::CmpIPredicate::slt, remainingRows, cArrayRows);
+    Value clampCols = rewriter.create<arith::CmpIOp>(
+        op.getLoc(), arith::CmpIPredicate::slt, remainingCols, cArrayCols);
+    Value copyRows = rewriter.create<arith::SelectOp>(op.getLoc(), clampRows, remainingRows, cArrayRows);
+    Value copyCols = rewriter.create<arith::SelectOp>(op.getLoc(), clampCols, remainingCols, cArrayCols);
+
+    SmallVector<OpFoldResult> srcOffsets{rowOffset, colOffset};
+    SmallVector<OpFoldResult> copySizes{copyRows, copyCols};
+    SmallVector<OpFoldResult> copyStrides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
+    auto srcSubviewTy =
+        memref::SubViewOp::inferResultType(fullMemrefTy, srcOffsets, copySizes, copyStrides);
+    Value sourceTile = rewriter.create<memref::SubViewOp>(
+        op.getLoc(), srcSubviewTy, fullMemref, srcOffsets, copySizes, copyStrides);
+
+    SmallVector<OpFoldResult> dstOffsets{rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    auto dstSubviewTy =
+        memref::SubViewOp::inferResultType(scratchTy, dstOffsets, copySizes, copyStrides);
+    Value paddedTile = rewriter.create<memref::SubViewOp>(
+        op.getLoc(), dstSubviewTy, arrayMemref, dstOffsets, copySizes, copyStrides);
+    rewriter.create<memref::CopyOp>(op.getLoc(), sourceTile, paddedTile);
 
     int64_t gridCols = gridTy.getGridShape()[1];
     int64_t matrixWidth = matrixTy.getShape()[1];
@@ -227,14 +270,48 @@ public:
     Value cArrayCols = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), arrayCols);
     Value colOffset = rewriter.create<arith::MulIOp>(op.getLoc(), adaptor.getSliceIndex(), cArrayCols);
 
-    SmallVector<OpFoldResult> offsets{c0, colOffset};
-    SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(1), rewriter.getIndexAttr(arrayCols)};
-    SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-
     auto fullMemrefTy = MemRefType::get(vectorTy.getShape(), vectorTy.getElementType());
     Value fullMemref = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), fullMemrefTy, adaptor.getInput());
-    auto subviewTy = memref::SubViewOp::inferResultType(fullMemrefTy, offsets, sizes, strides);
-    Value arrayMemref = rewriter.create<memref::SubViewOp>(op.getLoc(), subviewTy, fullMemref, offsets, sizes, strides);
+    auto scratchTy = MemRefType::get({1, arrayCols}, vectorTy.getElementType());
+    Value arrayMemref =
+        rewriter.create<memref::AllocOp>(op.getLoc(), scratchTy);
+
+    TypedAttr zeroAttr = rewriter.getZeroAttr(vectorTy.getElementType());
+    if (!zeroAttr) {
+      return rewriter.notifyMatchFailure(op, "expected zero-initializable vector element type");
+    }
+
+    Value zero = rewriter.create<arith::ConstantOp>(op.getLoc(), vectorTy.getElementType(), zeroAttr);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+
+    rewriter.create<scf::ForOp>(
+        op.getLoc(), c0, cArrayCols, c1, ValueRange{},
+        [&](OpBuilder &b, Location loc, Value j, ValueRange) {
+          b.create<memref::StoreOp>(loc, zero, arrayMemref, ValueRange{c0, j});
+          b.create<scf::YieldOp>(loc);
+        });
+
+    Value vectorCols = rewriter.create<memref::DimOp>(op.getLoc(), fullMemref, 1);
+    Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), vectorCols, colOffset);
+    Value needsClamp = rewriter.create<arith::CmpIOp>(
+        op.getLoc(), arith::CmpIPredicate::slt, remainingCols, cArrayCols);
+    Value copyCols = rewriter.create<arith::SelectOp>(op.getLoc(), needsClamp, remainingCols, cArrayCols);
+
+    SmallVector<OpFoldResult> srcOffsets{c0, colOffset};
+    SmallVector<OpFoldResult> copySizes{rewriter.getIndexAttr(1), copyCols};
+    SmallVector<OpFoldResult> copyStrides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
+    auto srcSubviewTy =
+        memref::SubViewOp::inferResultType(fullMemrefTy, srcOffsets, copySizes, copyStrides);
+    Value sourceSlice = rewriter.create<memref::SubViewOp>(
+        op.getLoc(), srcSubviewTy, fullMemref, srcOffsets, copySizes, copyStrides);
+
+    SmallVector<OpFoldResult> dstOffsets{c0, rewriter.getIndexAttr(0)};
+    auto dstSubviewTy =
+        memref::SubViewOp::inferResultType(scratchTy, dstOffsets, copySizes, copyStrides);
+    Value paddedPrefix = rewriter.create<memref::SubViewOp>(
+        op.getLoc(), dstSubviewTy, arrayMemref, dstOffsets, copySizes, copyStrides);
+    rewriter.create<memref::CopyOp>(op.getLoc(), sourceSlice, paddedPrefix);
+
     int64_t gridCols = sliceTy.getGridShape()[1];
     Value row = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
     Value col = adaptor.getSliceIndex();
@@ -366,6 +443,7 @@ void ConvertAnalogToGolemBackendPass::getDependentDialects(
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
+  registry.insert<mlir::scf::SCFDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
 }
 
