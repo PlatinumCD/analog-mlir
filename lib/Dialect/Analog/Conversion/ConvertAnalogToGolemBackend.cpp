@@ -214,20 +214,22 @@ public:
     Value copyRows = rewriter.create<arith::SelectOp>(op.getLoc(), clampRows, remainingRows, cArrayRows);
     Value copyCols = rewriter.create<arith::SelectOp>(op.getLoc(), clampCols, remainingCols, cArrayCols);
 
-    SmallVector<OpFoldResult> srcOffsets{rowOffset, colOffset};
-    SmallVector<OpFoldResult> copySizes{copyRows, copyCols};
-    SmallVector<OpFoldResult> copyStrides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-    auto srcSubviewTy =
-        memref::SubViewOp::inferResultType(fullMemrefTy, srcOffsets, copySizes, copyStrides);
-    Value sourceTile = rewriter.create<memref::SubViewOp>(
-        op.getLoc(), srcSubviewTy, fullMemref, srcOffsets, copySizes, copyStrides);
-
-    SmallVector<OpFoldResult> dstOffsets{rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
-    auto dstSubviewTy =
-        memref::SubViewOp::inferResultType(scratchTy, dstOffsets, copySizes, copyStrides);
-    Value paddedTile = rewriter.create<memref::SubViewOp>(
-        op.getLoc(), dstSubviewTy, arrayMemref, dstOffsets, copySizes, copyStrides);
-    rewriter.create<memref::CopyOp>(op.getLoc(), sourceTile, paddedTile);
+    rewriter.create<scf::ForOp>(
+        op.getLoc(), c0, copyRows, c1, ValueRange{},
+        [&](OpBuilder &rowBuilder, Location rowLoc, Value rowIdx, ValueRange) {
+          rowBuilder.create<scf::ForOp>(
+              rowLoc, c0, copyCols, c1, ValueRange{},
+              [&](OpBuilder &colBuilder, Location colLoc, Value colIdx, ValueRange) {
+                Value srcRow = colBuilder.create<arith::AddIOp>(colLoc, rowOffset, rowIdx);
+                Value srcCol = colBuilder.create<arith::AddIOp>(colLoc, colOffset, colIdx);
+                Value value = colBuilder.create<memref::LoadOp>(
+                    colLoc, fullMemref, ValueRange{srcRow, srcCol});
+                colBuilder.create<memref::StoreOp>(
+                    colLoc, value, arrayMemref, ValueRange{rowIdx, colIdx});
+                colBuilder.create<scf::YieldOp>(colLoc);
+              });
+          rowBuilder.create<scf::YieldOp>(rowLoc);
+        });
 
     int64_t gridCols = gridTy.getGridShape()[1];
     int64_t matrixWidth = matrixTy.getShape()[1];
@@ -297,20 +299,14 @@ public:
         op.getLoc(), arith::CmpIPredicate::slt, remainingCols, cArrayCols);
     Value copyCols = rewriter.create<arith::SelectOp>(op.getLoc(), needsClamp, remainingCols, cArrayCols);
 
-    SmallVector<OpFoldResult> srcOffsets{c0, colOffset};
-    SmallVector<OpFoldResult> copySizes{rewriter.getIndexAttr(1), copyCols};
-    SmallVector<OpFoldResult> copyStrides{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-    auto srcSubviewTy =
-        memref::SubViewOp::inferResultType(fullMemrefTy, srcOffsets, copySizes, copyStrides);
-    Value sourceSlice = rewriter.create<memref::SubViewOp>(
-        op.getLoc(), srcSubviewTy, fullMemref, srcOffsets, copySizes, copyStrides);
-
-    SmallVector<OpFoldResult> dstOffsets{c0, rewriter.getIndexAttr(0)};
-    auto dstSubviewTy =
-        memref::SubViewOp::inferResultType(scratchTy, dstOffsets, copySizes, copyStrides);
-    Value paddedPrefix = rewriter.create<memref::SubViewOp>(
-        op.getLoc(), dstSubviewTy, arrayMemref, dstOffsets, copySizes, copyStrides);
-    rewriter.create<memref::CopyOp>(op.getLoc(), sourceSlice, paddedPrefix);
+    rewriter.create<scf::ForOp>(
+        op.getLoc(), c0, copyCols, c1, ValueRange{},
+        [&](OpBuilder &b, Location loc, Value j, ValueRange) {
+          Value srcCol = b.create<arith::AddIOp>(loc, colOffset, j);
+          Value value = b.create<memref::LoadOp>(loc, fullMemref, ValueRange{c0, srcCol});
+          b.create<memref::StoreOp>(loc, value, arrayMemref, ValueRange{c0, j});
+          b.create<scf::YieldOp>(loc);
+        });
 
     int64_t gridCols = sliceTy.getGridShape()[1];
     Value row = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
@@ -420,7 +416,16 @@ public:
 
     emitIntrinsicCall(rewriter, op.getLoc(), "golem_analog_mvm_store",
                       {scratch, arrayId});
-    rewriter.create<memref::CopyOp>(op.getLoc(), scratch, arrayMemref);
+
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
+    Value cArrayRows = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), arrayRows);
+    rewriter.create<scf::ForOp>(
+        op.getLoc(), c0, cArrayRows, c1, ValueRange{},
+        [&](OpBuilder &b, Location loc, Value laneIdx, ValueRange) {
+          Value value = b.create<memref::LoadOp>(loc, scratch, ValueRange{c0, c0, laneIdx});
+          b.create<memref::StoreOp>(loc, value, arrayMemref, ValueRange{c0, c0, laneIdx});
+          b.create<scf::YieldOp>(loc);
+        });
 
     rewriter.eraseOp(op);
     return success();
