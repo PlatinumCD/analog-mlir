@@ -5,6 +5,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/TransformUtils.h"
 
 #include "llvm/Support/Casting.h"
+#include <algorithm>
 #include <cstdint>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/DialectRegistry.h>
@@ -24,6 +25,46 @@ constexpr StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
 
 analog::MatrixType getPartitionableMatrixType(Value value) {
   return llvm::dyn_cast<analog::MatrixType>(value.getType());
+}
+
+
+// Finds the next free matrix source id so existing matrix materializations
+// can be linked to later matmul execution.
+int64_t getNextMatrixSourceId(func::FuncOp func) {
+  int64_t nextMatrixSourceId = 0;
+  func.walk([&](Operation *op) {
+    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+    if (!matrixSourceId)
+      return;
+
+    nextMatrixSourceId =
+        std::max(nextMatrixSourceId, matrixSourceId.getInt() + 1);
+  });
+  return nextMatrixSourceId;
+}
+
+
+// Ensures the source matrix and its partition share a stable source id even
+// when the IR already contained handwritten matrix materializations.
+IntegerAttr getOrCreateMatrixSourceId(analog::MatrixFromTensorOp op,
+                                      int64_t &nextMatrixSourceId) {
+  if (auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr))
+    return matrixSourceId;
+
+  if (auto constantOp = op.getInput().getDefiningOp<arith::ConstantOp>()) {
+    if (auto matrixSourceId =
+            constantOp->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr)) {
+      op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+      return matrixSourceId;
+    }
+  }
+
+  auto matrixSourceId = IntegerAttr::get(
+      IntegerType::get(op.getContext(), 64), nextMatrixSourceId++);
+  op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+  if (auto constantOp = op.getInput().getDefiningOp<arith::ConstantOp>())
+    constantOp->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+  return matrixSourceId;
 }
 
 } // namespace
@@ -50,6 +91,7 @@ llvm::StringRef PartitionMatrixPass::getDescription() const {
 
 void PartitionMatrixPass::runOnOperation() {
   auto func = getOperation();
+  int64_t nextMatrixSourceId = getNextMatrixSourceId(func);
 
   func.walk([&](analog::MatrixFromTensorOp op) {
     Value output = op.getResult();
@@ -83,9 +125,8 @@ void PartitionMatrixPass::runOnOperation() {
       arrayGridTy,
       op.getResult()
     );
-    if (auto matrixSourceId = op->getAttr(kMatrixSourceIdAttr)) {
-      partition->setAttr(kMatrixSourceIdAttr, matrixSourceId);
-    }
+    partition->setAttr(kMatrixSourceIdAttr,
+                       getOrCreateMatrixSourceId(op, nextMatrixSourceId));
   });
 }
 

@@ -54,6 +54,49 @@ collectMatrixGridsBySourceId(func::FuncOp func) {
 }
 
 
+// Tries to recover a matrix source id from a value that still traces back
+// to a tagged constant through simple tensor reshaping ops.
+static IntegerAttr findMatrixSourceIdOnValue(Value value) {
+  if (!value)
+    return {};
+
+  if (auto definingOp = value.getDefiningOp()) {
+    if (auto matrixSourceId =
+            definingOp->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr)) {
+      return matrixSourceId;
+    }
+  }
+
+  if (auto constantOp = value.getDefiningOp<arith::ConstantOp>()) {
+    return constantOp->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+  }
+
+  if (auto transposeOp = value.getDefiningOp<linalg::TransposeOp>()) {
+    return findMatrixSourceIdOnValue(transposeOp.getInput());
+  }
+
+  return {};
+}
+
+
+// Ensures matmuls that consume a tagged constant-backed RHS tensor also
+// carry the source id needed by the execution pipeline.
+static IntegerAttr getOrInferMatmulSourceId(linalg::MatmulOp op) {
+  if (auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr))
+    return matrixSourceId;
+
+  if (op.getInputs().size() < 2)
+    return {};
+
+  IntegerAttr matrixSourceId = findMatrixSourceIdOnValue(op.getInputs()[1]);
+  if (!matrixSourceId)
+    return {};
+
+  op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+  return matrixSourceId;
+}
+
+
 // Resolves the execution plan for a matmul tagged with a matrix source
 // id and reports whether this matmul should be rewritten.
 
@@ -67,7 +110,7 @@ buildMatmulExecutionPlan(
     return failure();
   }
 
-  auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+  auto matrixSourceId = getOrInferMatmulSourceId(op);
   if (!matrixSourceId) {
     return std::optional<MatmulExecutionPlan>{};
   }

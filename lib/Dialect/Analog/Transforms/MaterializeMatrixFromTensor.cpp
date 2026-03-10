@@ -9,6 +9,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/Support/Casting.h"
+#include <algorithm>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/Support/LLVM.h>
@@ -37,6 +38,36 @@ RankedTensorType getMaterializableMatrixTensorType(arith::ConstantOp op) {
   }
 
   return tensorTy;
+}
+
+
+// Finds the next free matrix source id so newly discovered matrix constants
+// can participate in later analog execution passes.
+int64_t getNextMatrixSourceId(func::FuncOp func) {
+  int64_t nextMatrixSourceId = 0;
+  func.walk([&](arith::ConstantOp op) {
+    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+    if (!matrixSourceId)
+      return;
+
+    nextMatrixSourceId =
+        std::max(nextMatrixSourceId, matrixSourceId.getInt() + 1);
+  });
+  return nextMatrixSourceId;
+}
+
+
+// Ensures each materializable matrix constant has a stable source id so
+// partitioning and execution can reconnect it to later matmuls.
+IntegerAttr getOrCreateMatrixSourceId(arith::ConstantOp op,
+                                      int64_t &nextMatrixSourceId) {
+  if (auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr))
+    return matrixSourceId;
+
+  auto matrixSourceId = IntegerAttr::get(
+      IntegerType::get(op.getContext(), 64), nextMatrixSourceId++);
+  op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+  return matrixSourceId;
 }
 
 
@@ -77,6 +108,7 @@ llvm::StringRef MaterializeMatrixFromTensorPass::getDescription() const {
 
 void MaterializeMatrixFromTensorPass::runOnOperation() {
   auto func = getOperation();
+  int64_t nextMatrixSourceId = getNextMatrixSourceId(func);
 
   func.walk([&](arith::ConstantOp op) {
     RankedTensorType tensorTy = getMaterializableMatrixTensorType(op);
@@ -98,6 +130,7 @@ void MaterializeMatrixFromTensorPass::runOnOperation() {
         matrixTy,
         op.getResult()
     );
+    getOrCreateMatrixSourceId(op, nextMatrixSourceId);
     propagateMatrixSourceId(op, materialized.getOperation());
   });
 }
