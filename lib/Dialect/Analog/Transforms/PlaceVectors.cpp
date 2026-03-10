@@ -14,24 +14,44 @@ using namespace mlir;
 namespace mlir {
 namespace analog {
 
-// =====--------------------------------=====
-//   PlaceVectorsPass - Pass
-// =====--------------------------------=====
+namespace {
+
+
+// Returns the slice type only for values already partitioned into
+// analog vector slices.
+
+analog::VectorSliceType getPlacableVectorSliceType(Value value) {
+  return llvm::dyn_cast<analog::VectorSliceType>(value.getType());
+}
+
+} // namespace
+
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
 
 llvm::StringRef PlaceVectorsPass::getArgument() const {
   return "analog-place-vectors";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef PlaceVectorsPass::getDescription() const {
   return "Generate varray placement loops that emit analog.array.vector.place for each vector array coordinate";
 }
+
+
+// Emits placement loops for each partitioned vector so every array-grid
+// coordinate receives a concrete placement op.
 
 void PlaceVectorsPass::runOnOperation() {
   auto func = getOperation();
 
   func.walk([&](analog::VectorPartitionOp op) {
     auto slice = op.getResult();
-    auto sliceTy = llvm::dyn_cast<analog::VectorSliceType>(slice.getType());
+    analog::VectorSliceType sliceTy = getPlacableVectorSliceType(slice);
     if (!sliceTy) {
       return;
     }
@@ -57,9 +77,17 @@ void PlaceVectorsPass::runOnOperation() {
   });
 }
 
+
+// Declares the analog dialect required for the placement ops inserted
+// by this pass.
+
 void PlaceVectorsPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
+
+
+// Builds a new instance of the pass for registration and pipeline
+// construction.
 
 std::unique_ptr<mlir::Pass> createPlaceVectorsPass() {
   return std::make_unique<PlaceVectorsPass>();

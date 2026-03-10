@@ -14,30 +14,52 @@ using namespace mlir;
 namespace mlir {
 namespace analog {
 
-// =====--------------------------------=====
-//   PartitionMatrixPass - Pass
-// =====--------------------------------=====
+namespace {
+
+constexpr StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
+
+
+// Returns the matrix type only for values already materialized as
+// analog matrices.
+
+analog::MatrixType getPartitionableMatrixType(Value value) {
+  return llvm::dyn_cast<analog::MatrixType>(value.getType());
+}
+
+} // namespace
+
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
 
 llvm::StringRef PartitionMatrixPass::getArgument() const {
   return "analog-partition-matrix";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef PartitionMatrixPass::getDescription() const {
   return "Partition analog matrices into array-grid views using configurable array dimensions";
 }
+
+
+// Partitions each analog matrix into a grid type sized by the
+// configured array dimensions and forwards its source id.
 
 void PartitionMatrixPass::runOnOperation() {
   auto func = getOperation();
 
   func.walk([&](analog::MatrixFromTensorOp op) {
     Value output = op.getResult();
-    auto matrixTy = llvm::dyn_cast<analog::MatrixType>(output.getType());
+    analog::MatrixType matrixTy = getPartitionableMatrixType(output);
     if (!matrixTy) {
       return;
     }
 
-    int64_t arrayRows   = array_rows;
-    int64_t arrayCols   = array_cols;
+    int64_t arrayRows  = array_rows;
+    int64_t arrayCols  = array_cols;
 
     auto matrixShape = matrixTy.getShape();
     int64_t matrixRows = matrixShape[0];
@@ -56,21 +78,36 @@ void PartitionMatrixPass::runOnOperation() {
       matrixTy
     );
 
-    builder.create<analog::MatrixPartitionOp>(
+    auto partition = builder.create<analog::MatrixPartitionOp>(
       op.getLoc(),
       arrayGridTy,
       op.getResult()
     );
+    if (auto matrixSourceId = op->getAttr(kMatrixSourceIdAttr)) {
+      partition->setAttr(kMatrixSourceIdAttr, matrixSourceId);
+    }
   });
 }
+
+
+// Declares the analog dialect required for the matrix partition op
+// inserted by this pass.
 
 void PartitionMatrixPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
 
+
+// Builds a new instance of the pass using the default array
+// dimensions.
+
 std::unique_ptr<mlir::Pass> createPartitionMatrixPass() {
   return std::make_unique<PartitionMatrixPass>();
 }
+
+
+// Builds a new instance of the pass with explicit array dimensions for
+// pipeline construction.
 
 std::unique_ptr<mlir::Pass> createPartitionMatrixPass(int64_t arrayRows, int64_t arrayCols) {
   auto pass = std::make_unique<PartitionMatrixPass>();

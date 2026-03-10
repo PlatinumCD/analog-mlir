@@ -62,6 +62,22 @@ It extends MLIR with an `analog` dialect and a sequence of transformation passes
 
 | Pipeline | Contains |
 |---|---|
-| `MaterializePipeline` | Matrix + vector materialization |
-| `PartitionPipeline` | Matrix and vector partitioning |
-| `PlacePipeline` | Placement and execution prep |
+| `analog-rewrite-conv-to-matmul` | `PrepareConv2DToMatmulPass` + `RewriteConv2DToMatmulPass` |
+| `analog-materialize-and-place` | Matrix/vector materialization, partitioning, and placement |
+| `analog-execute-and-replace` | Array execution, result reduction, and matmul replacement |
+| `analog-dispatch-runtime` | Layer isolation plus weight/layer dispatch entrypoints |
+| `analog-lower-to-golem` | Backend conversion plus hardware intrinsic finalization |
+| `analog-lower-to-debug-shims` | Backend conversion plus debug shim lowering |
+
+Recommended pipeline order:
+
+1. `analog-rewrite-conv-to-matmul`
+2. `analog-materialize-and-place`
+3. `analog-execute-and-replace`
+4. `analog-dispatch-runtime` when you want isolated layer and weight entrypoints
+5. one of:
+   `analog-lower-to-golem` for final hardware intrinsics
+   `analog-lower-to-debug-shims` for simulation or instrumentation
+
+The two lowering pipelines are alternatives. They both start with
+`convert-analog-to-golem-backend`, then diverge at the final conversion step.

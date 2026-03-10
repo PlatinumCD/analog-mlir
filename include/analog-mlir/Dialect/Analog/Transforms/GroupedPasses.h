@@ -6,10 +6,10 @@
 namespace mlir {
 namespace analog {
 
-void registerMaterializePipeline();
-void registerPartitionPipeline();
-void registerPlacePipeline();
-void registerResolveResultsPipeline();
+void registerRewriteConvToMatmulPipeline();
+void registerMaterializeAndPlacePipeline();
+void registerExecuteAndReplacePipeline();
+void registerDispatchRuntimePipeline();
 
 } // namespace analog
 } // namespace mlir

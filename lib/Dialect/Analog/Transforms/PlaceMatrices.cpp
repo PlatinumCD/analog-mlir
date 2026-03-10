@@ -14,24 +14,44 @@ using namespace mlir;
 namespace mlir {
 namespace analog {
 
-// =====--------------------------------=====
-//   PlaceMatricesPass - Pass
-// =====--------------------------------=====
+namespace {
+
+
+// Returns the grid type only for values already partitioned into
+// analog matrix grids.
+
+analog::MatrixGridType getPlacableMatrixGridType(Value value) {
+  return llvm::dyn_cast<analog::MatrixGridType>(value.getType());
+}
+
+} // namespace
+
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
 
 llvm::StringRef PlaceMatricesPass::getArgument() const {
   return "analog-place-matrices";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef PlaceMatricesPass::getDescription() const {
   return "Generate array placement loops that emit analog.array.matrix.place for each array-grid coordinate";
 }
+
+
+// Emits placement loops for each partitioned matrix so every array-grid
+// coordinate receives a concrete placement op.
 
 void PlaceMatricesPass::runOnOperation() {
   auto func = getOperation();
 
   func.walk([&](analog::MatrixPartitionOp op) {
     auto grid = op.getResult();
-    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
+    analog::MatrixGridType gridTy = getPlacableMatrixGridType(grid);
     if (!gridTy) {
       return;
     }
@@ -59,9 +79,17 @@ void PlaceMatricesPass::runOnOperation() {
   });
 }
 
+
+// Declares the analog dialect required for the placement ops inserted
+// by this pass.
+
 void PlaceMatricesPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
+
+
+// Builds a new instance of the pass for registration and pipeline
+// construction.
 
 std::unique_ptr<mlir::Pass> createPlaceMatricesPass() {
   return std::make_unique<PlaceMatricesPass>();

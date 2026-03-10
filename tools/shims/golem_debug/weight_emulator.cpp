@@ -1,6 +1,7 @@
 #include "weight_emulator.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cstdio>
 
 namespace analog {
@@ -36,13 +37,17 @@ void ComputeArray::setMatrixFromRowMajor(const float *src, int32_t srcStride) {
     srcStride = cols_;
   }
 
+  clear();
+
   for (int32_t r = 0; r < rows_; ++r) {
-    for (int32_t c = 0; c < cols_; ++c) {
-      matrix_[matrixIndex(r, c)] =
-          src[static_cast<size_t>(r) * static_cast<size_t>(srcStride) +
-              static_cast<size_t>(c)];
-    }
+    const float *srcRow =
+        src + static_cast<size_t>(r) * static_cast<size_t>(srcStride);
+    float *dstRow = matrix_.data() + static_cast<size_t>(r) * static_cast<size_t>(cols_);
+    std::copy_n(srcRow, cols_, dstRow);
   }
+
+  std::printf("[sim] programmed array=%d from row-major source with stride=%d\n",
+              arrayId_, srcStride);
 }
 
 void ComputeArray::setMatrixFromPackedId(const float *src, int32_t packedArrayId) {
@@ -58,9 +63,11 @@ void ComputeArray::loadVector(const float *src) {
   if (!src) {
     return;
   }
-  for (int32_t c = 0; c < cols_; ++c) {
-    inputVector_[static_cast<size_t>(c)] = src[static_cast<size_t>(c)];
-  }
+
+  std::fill(inputVector_.begin(), inputVector_.end(), 0.0f);
+  std::copy_n(src, cols_, inputVector_.data());
+
+  std::printf("[sim] loaded vector into array=%d (%d lanes)\n", arrayId_, cols_);
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +82,9 @@ void ComputeArray::compute() {
     }
     outputVector_[static_cast<size_t>(r)] = acc;
   }
+
+  std::printf("[sim] computed array=%d matvec (%d x %d)\n",
+              arrayId_, rows_, cols_);
 }
 
 // ---------------------------------------------------------------------------
@@ -85,9 +95,10 @@ void ComputeArray::storeOutput(float *dst) const {
   if (!dst) {
     return;
   }
-  for (int32_t r = 0; r < rows_; ++r) {
-    dst[static_cast<size_t>(r)] = outputVector_[static_cast<size_t>(r)];
-  }
+
+  std::copy_n(outputVector_.data(), rows_, dst);
+
+  std::printf("[sim] stored output from array=%d (%d values)\n", arrayId_, rows_);
 }
 
 // ---------------------------------------------------------------------------

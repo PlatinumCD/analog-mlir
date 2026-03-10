@@ -6,8 +6,14 @@
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PrepareConv2DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IsolateLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/DispatchWeights.h"
+#include "analog-mlir/Dialect/Analog/Transforms/DispatchLayers.h"
 
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -17,29 +23,30 @@ using namespace mlir;
 using namespace mlir::analog;
 
 //===----------------------------------------------------------------------===//
-// analog-materialize 
+// analog-rewrite-conv-to-matmul
 //===----------------------------------------------------------------------===//
 
-struct MaterializePipelineOptions
-    : public PassPipelineOptions<MaterializePipelineOptions> {};
+struct RewriteConvToMatmulPipelineOptions
+    : public PassPipelineOptions<RewriteConvToMatmulPipelineOptions> {};
 
-void mlir::analog::registerMaterializePipeline() {
-  PassPipelineRegistration<MaterializePipelineOptions>(
-      "analog-materialize",
-      "Materialize tensors into analog matrix and vector IR",
+void mlir::analog::registerRewriteConvToMatmulPipeline() {
+  PassPipelineRegistration<RewriteConvToMatmulPipelineOptions>(
+      "analog-rewrite-conv-to-matmul",
+      "Rewrite supported conv2d ops into a matmul-oriented form",
       [](OpPassManager &pm,
-         const MaterializePipelineOptions &) {
-        pm.addPass(createMaterializeMatrixFromTensorPass());
-        pm.addPass(createMaterializeVectorFromTensorPass());
+         const RewriteConvToMatmulPipelineOptions &) {
+        OpPassManager &funcPM = pm.nest<func::FuncOp>();
+        funcPM.addPass(createPrepareConv2DToMatmulPass());
+        funcPM.addPass(createRewriteConv2DToMatmulPass());
       });
 }
 
 //===----------------------------------------------------------------------===//
-// analog-partition pipeline
+// analog-materialize-and-place
 //===----------------------------------------------------------------------===//
 
-struct PartitionPipelineOptions
-    : public PassPipelineOptions<PartitionPipelineOptions> {
+struct MaterializeAndPlacePipelineOptions
+    : public PassPipelineOptions<MaterializeAndPlacePipelineOptions> {
 
   Option<int64_t> arrayRows{
       *this, "array-rows",
@@ -52,51 +59,60 @@ struct PartitionPipelineOptions
       llvm::cl::init(16)};
 };
 
-void mlir::analog::registerPartitionPipeline() {
-  PassPipelineRegistration<PartitionPipelineOptions>(
-      "analog-partition",
-      "Partition analog matrices and vectors into arrays",
+void mlir::analog::registerMaterializeAndPlacePipeline() {
+  PassPipelineRegistration<MaterializeAndPlacePipelineOptions>(
+      "analog-materialize-and-place",
+      "Materialize analog tensors, partition them into arrays, and place them",
       [](OpPassManager &pm,
-         const PartitionPipelineOptions &opts) {
-        pm.addPass(createPartitionMatrixPass(
+         const MaterializeAndPlacePipelineOptions &opts) {
+        OpPassManager &funcPM = pm.nest<func::FuncOp>();
+        funcPM.addPass(createMaterializeMatrixFromTensorPass());
+        funcPM.addPass(createMaterializeVectorFromTensorPass());
+        funcPM.addPass(createPartitionMatrixPass(
             opts.arrayRows, opts.arrayCols));
-        pm.addPass(createPartitionVectorPass(
+        funcPM.addPass(createPartitionVectorPass(
             opts.arrayRows, opts.arrayCols));
+        funcPM.addPass(createPlaceMatricesPass());
+        funcPM.addPass(createPlaceVectorsPass());
       });
 }
 
 //===----------------------------------------------------------------------===//
-// analog-place pipeline 
+// analog-execute-and-replace
 //===----------------------------------------------------------------------===//
 
-struct PlacePipelineOptions
-    : public PassPipelineOptions<PlacePipelineOptions> {};
+struct ExecuteAndReplacePipelineOptions
+    : public PassPipelineOptions<ExecuteAndReplacePipelineOptions> {};
 
-void mlir::analog::registerPlacePipeline() {
-  PassPipelineRegistration<PlacePipelineOptions>(
-      "analog-place",
-      "Extract and place analog arrays and vector arrays",
+void mlir::analog::registerExecuteAndReplacePipeline() {
+  PassPipelineRegistration<ExecuteAndReplacePipelineOptions>(
+      "analog-execute-and-replace",
+      "Execute placed analog arrays, reduce results, and replace source matmuls",
       [](OpPassManager &pm,
-         const PlacePipelineOptions &) {
-        pm.addPass(createPlaceMatricesPass());
-        pm.addPass(createPlaceVectorsPass());
+         const ExecuteAndReplacePipelineOptions &) {
+        OpPassManager &funcPM = pm.nest<func::FuncOp>();
+        funcPM.addPass(createExecuteArrayPass());
+        funcPM.addPass(createReduceResultsPass());
+        funcPM.addPass(createReplaceMatmulPass());
       });
 }
 
 //===----------------------------------------------------------------------===//
-// analog-resolve-results pipeline
+// analog-dispatch-runtime
 //===----------------------------------------------------------------------===//
 
-struct ResolveResultsPipelineOptions
-    : public PassPipelineOptions<ResolveResultsPipelineOptions> {};
+struct DispatchRuntimePipelineOptions
+    : public PassPipelineOptions<DispatchRuntimePipelineOptions> {};
 
-void mlir::analog::registerResolveResultsPipeline() {
-  PassPipelineRegistration<ResolveResultsPipelineOptions>(
-      "analog-resolve-results",
-      "Execute analog arrays and reduce results into final tensors",
+void mlir::analog::registerDispatchRuntimePipeline() {
+  PassPipelineRegistration<DispatchRuntimePipelineOptions>(
+      "analog-dispatch-runtime",
+      "Isolate analog routines and create weight/layer runtime dispatch entrypoints",
       [](OpPassManager &pm,
-         const ResolveResultsPipelineOptions &) {
-        pm.addPass(createExecuteArrayPass());
-        pm.addPass(createReduceResultsPass());
+         const DispatchRuntimePipelineOptions &) {
+        OpPassManager &funcPM = pm.nest<func::FuncOp>();
+        funcPM.addPass(createIsolateLayersPass());
+        pm.addPass(createDispatchWeightsPass());
+        pm.addPass(createDispatchLayersPass());
       });
 }

@@ -5,6 +5,8 @@ namespace mlir {
 namespace analog {
 
 void registerAnalogConversionPasses();
+void registerLowerToGolemPipeline();
+void registerLowerToDebugShimsPipeline();
 
 } // namespace analog
 } // namespace mlir

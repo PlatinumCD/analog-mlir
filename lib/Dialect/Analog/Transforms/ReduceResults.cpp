@@ -1,241 +1,362 @@
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
-#include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
+#include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cstdint>
-#include <deque>
-#include <mlir/Dialect/Linalg/IR/Linalg.h>
-#include <mlir/Dialect/Tensor/IR/Tensor.h>
-#include <mlir/IR/Builders.h>
-#include <mlir/IR/BuiltinAttributes.h>
-#include <mlir/IR/DialectRegistry.h>
-#include <mlir/Support/LLVM.h>
+#include "llvm/ADT/DenseMap.h"
+#include "mlir/IR/DialectRegistry.h"
 
+#include <optional>
 
 using namespace mlir;
 
 namespace mlir {
 namespace analog {
 
-// =====--------------------------------=====
-//   ReduceResultsPass - Pass
-// =====--------------------------------=====
+static constexpr llvm::StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
+static constexpr llvm::StringLiteral kMatmulExecIdAttr = "analog.matmul_exec_id";
+
+struct ReductionPlan {
+  analog::MatrixGridType gridTy;
+  Value resultBuffer;
+  int64_t gridRows;
+  int64_t gridCols;
+  int64_t matrixRows;
+  int64_t laneWidth;
+};
+
+struct ReductionConstants {
+  Value c0;
+  Value c1;
+  Value c0f;
+};
+
+
+// Builds a lookup from matrix source ids to the partitioned grid types
+// produced earlier in the lowering pipeline.
+
+static llvm::DenseMap<int64_t, analog::MatrixGridType>
+collectMatrixGridsBySourceId(func::FuncOp func) {
+  llvm::DenseMap<int64_t, analog::MatrixGridType> gridByMatrixSourceId;
+  func.walk([&](analog::MatrixPartitionOp op) {
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getResult().getType());
+    if (!gridTy) {
+      return;
+    }
+    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+    if (!matrixSourceId) {
+      return;
+    }
+    gridByMatrixSourceId.try_emplace(matrixSourceId.getInt(), gridTy);
+  });
+  return gridByMatrixSourceId;
+}
+
+
+// Builds a lookup from execution ids to the allocated result buffers
+// created by the execute-array pass.
+
+static llvm::DenseMap<int64_t, Value>
+collectResultBuffersByExecId(func::FuncOp func) {
+  llvm::DenseMap<int64_t, Value> resultBufferByExecId;
+  func.walk([&](memref::AllocOp op) {
+    auto execId = op->getAttrOfType<IntegerAttr>(kMatmulExecIdAttr);
+    if (!execId) {
+      return;
+    }
+    resultBufferByExecId.try_emplace(execId.getInt(), op.getResult());
+    op->removeAttr(kMatmulExecIdAttr);
+  });
+  return resultBufferByExecId;
+}
+
+// Resolves the grid and buffer inputs needed to reduce one tagged
+// matmul result back into a logical tensor.
+
+static FailureOr<std::optional<ReductionPlan>> buildReductionPlan(
+    linalg::MatmulOp op,
+    const llvm::DenseMap<int64_t, analog::MatrixGridType> &gridByMatrixSourceId,
+    const llvm::DenseMap<int64_t, Value> &resultBufferByExecId) {
+  if (op.getInputs().size() < 2) {
+    op.emitError("expected matmul with two inputs");
+    return failure();
+  }
+
+  auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+  if (!matrixSourceId) {
+    return std::optional<ReductionPlan>{};
+  }
+
+  auto gridIt = gridByMatrixSourceId.find(matrixSourceId.getInt());
+  if (gridIt == gridByMatrixSourceId.end()) {
+    op.emitError("could not find analog matrix partition for matmul RHS");
+    return failure();
+  }
+  analog::MatrixGridType gridTy = gridIt->second;
+
+  auto gridShape = gridTy.getGridShape();
+  if (gridShape.size() != 2) {
+    op.emitError("expected matrix grid shape to be rank-2");
+    return failure();
+  }
+  int64_t gridRows = gridShape[0];
+  int64_t gridCols = gridShape[1];
+
+  auto matrixTy = gridTy.getMatrix();
+  auto matrixShape = matrixTy.getShape();
+  if (matrixShape.size() != 2) {
+    op.emitError("expected matrix type to be rank-2");
+    return failure();
+  }
+  int64_t matrixRows = matrixShape[0];
+
+  auto execId = op->getAttrOfType<IntegerAttr>(kMatmulExecIdAttr);
+  if (!execId) {
+    op.emitError("matmul is missing analog execution id");
+    return failure();
+  }
+
+  auto memrefIt = resultBufferByExecId.find(execId.getInt());
+  if (memrefIt == resultBufferByExecId.end()) {
+    op.emitError("could not find analog result buffer for matmul");
+    return failure();
+  }
+  Value resultBuffer = memrefIt->second;
+
+  auto memrefTy = llvm::dyn_cast<mlir::MemRefType>(resultBuffer.getType());
+  if (!memrefTy) {
+    op.emitError("expected analog result buffer to be a memref");
+    return failure();
+  }
+  auto memrefShape = memrefTy.getShape();
+  if (memrefShape.size() != 3) {
+    op.emitError("expected memref<gridRows x gridCols x lanes x elem> result buffer");
+    return failure();
+  }
+  int64_t laneWidth = memrefShape[2];
+
+  return std::optional<ReductionPlan>{ReductionPlan{
+      gridTy,
+      resultBuffer,
+      gridRows,
+      gridCols,
+      matrixRows,
+      laneWidth,
+  }};
+}
+
+
+// Builds the constants reused across the reduction loops for one
+// rewritten matmul.
+
+static ReductionConstants buildReductionConstants(OpBuilder &builder,
+                                                  Location loc) {
+  return ReductionConstants{
+      builder.create<arith::ConstantIndexOp>(loc, 0),
+      builder.create<arith::ConstantIndexOp>(loc, 1),
+      builder.create<arith::ConstantFloatOp>(
+          loc, builder.getF32Type(), llvm::APFloat(0.0f)),
+  };
+}
+
+
+// Allocates and zero-initializes the temporary row buffers used to
+// accumulate reduced array results.
+
+static Value allocateZeroedRowBuffers(OpBuilder &builder, Location loc,
+                                      const ReductionPlan &plan,
+                                      const ReductionConstants &constants) {
+  auto rowBufTy =
+      MemRefType::get({plan.gridRows, plan.laneWidth}, builder.getF32Type());
+  Value rowBufs = builder.create<memref::AllocOp>(loc, rowBufTy);
+  Value cGridRows = builder.create<arith::ConstantIndexOp>(loc, plan.gridRows);
+  Value cLane = builder.create<arith::ConstantIndexOp>(loc, plan.laneWidth);
+
+  builder.create<scf::ForOp>(
+      loc, constants.c0, cGridRows, constants.c1, ValueRange{},
+      [&](OpBuilder &rowBuilder, Location rowLoc, Value r, ValueRange) {
+        rowBuilder.create<scf::ForOp>(
+            rowLoc, constants.c0, cLane, constants.c1, ValueRange{},
+            [&](OpBuilder &laneBuilder, Location laneLoc, Value j, ValueRange) {
+              laneBuilder.create<memref::StoreOp>(laneLoc, constants.c0f, rowBufs,
+                                                  ValueRange{r, j});
+              laneBuilder.create<scf::YieldOp>(laneLoc);
+            });
+        rowBuilder.create<scf::YieldOp>(rowLoc);
+      });
+  return rowBufs;
+}
+
+
+// Sums the per-array partial results across each grid row into the
+// temporary reduction buffers.
+
+static void emitRowReduction(OpBuilder &builder, Location loc, Value rowBufs,
+                             const ReductionPlan &plan,
+                             const ReductionConstants &constants) {
+  Value cGridRows = builder.create<arith::ConstantIndexOp>(loc, plan.gridRows);
+  Value cGridCols = builder.create<arith::ConstantIndexOp>(loc, plan.gridCols);
+  Value cLane = builder.create<arith::ConstantIndexOp>(loc, plan.laneWidth);
+
+  builder.create<scf::ForOp>(
+      loc, constants.c0, cGridRows, constants.c1, ValueRange{},
+      [&](OpBuilder &rowBuilder, Location rowLoc, Value r, ValueRange) {
+        rowBuilder.create<scf::ForOp>(
+            rowLoc, constants.c0, cGridCols, constants.c1, ValueRange{},
+            [&](OpBuilder &colBuilder, Location colLoc, Value c, ValueRange) {
+              colBuilder.create<scf::ForOp>(
+                  colLoc, constants.c0, cLane, constants.c1, ValueRange{},
+                  [&](OpBuilder &laneBuilder, Location laneLoc, Value j,
+                      ValueRange) {
+                    Value acc = laneBuilder.create<memref::LoadOp>(
+                        laneLoc, rowBufs, ValueRange{r, j});
+                    Value val = laneBuilder.create<memref::LoadOp>(
+                        laneLoc, plan.resultBuffer, ValueRange{r, c, j});
+                    Value sum =
+                        laneBuilder.create<arith::AddFOp>(laneLoc, acc, val);
+                    laneBuilder.create<memref::StoreOp>(
+                        laneLoc, sum, rowBufs, ValueRange{r, j});
+                    laneBuilder.create<scf::YieldOp>(laneLoc);
+                  });
+              colBuilder.create<scf::YieldOp>(colLoc);
+            });
+        rowBuilder.create<scf::YieldOp>(rowLoc);
+      });
+}
+
+
+// Materializes the reduced row buffers back into a rank-2 tensor while
+// trimming away any padded lanes.
+
+static Value materializeReducedTensor(OpBuilder &builder, Location loc,
+                                      Value rowBufs, const ReductionPlan &plan,
+                                      const ReductionConstants &constants) {
+  auto f32Ty = builder.getF32Type();
+  auto outTy = MemRefType::get({1, plan.matrixRows}, f32Ty);
+  Value out = builder.create<memref::AllocOp>(loc, outTy);
+  Value cGridRows = builder.create<arith::ConstantIndexOp>(loc, plan.gridRows);
+  Value cLane = builder.create<arith::ConstantIndexOp>(loc, plan.laneWidth);
+  Value cMatrixRows =
+      builder.create<arith::ConstantIndexOp>(loc, plan.matrixRows);
+
+  builder.create<scf::ForOp>(
+      loc, constants.c0, cGridRows, constants.c1, ValueRange{},
+      [&](OpBuilder &rowBuilder, Location rowLoc, Value r, ValueRange) {
+        rowBuilder.create<scf::ForOp>(
+            rowLoc, constants.c0, cLane, constants.c1, ValueRange{},
+            [&](OpBuilder &laneBuilder, Location laneLoc, Value j, ValueRange) {
+              Value v = laneBuilder.create<memref::LoadOp>(
+                  laneLoc, rowBufs, ValueRange{r, j});
+              Value colOffset =
+                  laneBuilder.create<arith::MulIOp>(laneLoc, r, cLane);
+              Value col =
+                  laneBuilder.create<arith::AddIOp>(laneLoc, colOffset, j);
+              Value inBounds = laneBuilder.create<arith::CmpIOp>(
+                  laneLoc, arith::CmpIPredicate::slt, col, cMatrixRows);
+              laneBuilder.create<scf::IfOp>(
+                  laneLoc, inBounds,
+                  [&](OpBuilder &ifBuilder, Location ifLoc) {
+                    ifBuilder.create<memref::StoreOp>(ifLoc, v, out,
+                                                      ValueRange{constants.c0, col});
+                    ifBuilder.create<scf::YieldOp>(ifLoc);
+                  });
+              laneBuilder.create<scf::YieldOp>(laneLoc);
+            });
+        rowBuilder.create<scf::YieldOp>(rowLoc);
+      });
+
+  auto resultTy = RankedTensorType::get({1, plan.matrixRows}, f32Ty);
+  auto toTensor = builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
+  toTensor->setAttr("restrict", builder.getUnitAttr());
+  return toTensor.getResult();
+}
+
+
+// Rewrites one tagged matmul by reducing its per-array execution
+// buffers back into the final logical tensor result.
+
+static LogicalResult rewriteReducedMatmul(OpBuilder &builder, linalg::MatmulOp op,
+                                          const ReductionPlan &plan) {
+  Location loc = op.getLoc();
+  ReductionConstants constants = buildReductionConstants(builder, loc);
+  Value rowBufs = allocateZeroedRowBuffers(builder, loc, plan, constants);
+  emitRowReduction(builder, loc, rowBufs, plan, constants);
+  materializeReducedTensor(builder, loc, rowBufs, plan, constants);
+  return success();
+}
+
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
 
 llvm::StringRef ReduceResultsPass::getArgument() const {
   return "analog-reduce-results";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef ReduceResultsPass::getDescription() const {
   return "Reduce array outputs into final tensor results";
 }
 
+
+// Reduces the per-array execution buffers associated with tagged
+// matmuls back into their final tensor results.
+
 void ReduceResultsPass::runOnOperation() {
   auto func = getOperation();
+  auto gridByMatrixSourceId = collectMatrixGridsBySourceId(func);
+  auto resultBufferByExecId = collectResultBuffersByExecId(func);
+  bool hadError = false;
 
-  std::deque<analog::MatrixGridType> gridQueue;
-  std::deque<mlir::Value> memrefValueQueue;
-
-  // Find array partition
-  func.walk([&](analog::MatrixPartitionOp op) {
-    auto grid = op.getResult();
-    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
-    if (!gridTy) {
+  func.walk([&](mlir::linalg::MatmulOp op) {
+    if (hadError) {
       return;
     }
-    gridQueue.push_back(gridTy);
-  });
 
-  // Find AllocOp
-  func.walk([&](memref::AllocOp op) {
-    if (op->getAttr("analog-alloc-id")) {
-      auto ref = op.getResult();
-      memrefValueQueue.push_back(ref);
-      op->removeAttr("analog-alloc-id");
-    }
-  });
-
-  // Find matmul
-  func.walk([&](mlir::linalg::MatmulOp op) {
     OpBuilder builder(op);
     builder.setInsertionPoint(op);
-    auto loc = op.getLoc();
-
-    // Grid data
-    auto gridTy = gridQueue.front();
-    gridQueue.pop_front();
-
-    auto gridShape = gridTy.getGridShape();
-    int64_t gridRows = gridShape[0];
-    int64_t gridCols = gridShape[1];
-
-    auto matrixTy = gridTy.getMatrix();
-    auto matrixShape = matrixTy.getShape();
-    int64_t matrixRows = matrixShape[0];
-    int64_t matrixCols = matrixShape[1];
-
-    // Memref data
-    auto memrefVal = memrefValueQueue.front();
-    memrefValueQueue.pop_front();
-
-    auto memrefTy = llvm::dyn_cast<mlir::MemRefType>(memrefVal.getType());
-    if (!memrefTy) {
+    FailureOr<std::optional<ReductionPlan>> maybePlan =
+        buildReductionPlan(op, gridByMatrixSourceId, resultBufferByExecId);
+    if (failed(maybePlan)) {
+      hadError = true;
       return;
     }
-
-    auto memrefShape = memrefTy.getShape();
-    int64_t memArrayLane = memrefShape[2];
-
-    // ================================================================
-    // Assumptions / Shape bindings (from your existing variables)
-    // ================================================================
-    // gridRows, gridCols        : gridTy.getGridShape()
-    // arrayRows, arrayCols        : arrayTy.getArrayShape()
-    // memArrayRows, memArrayCols  : memrefTy.getShape()[0,1]
-    // memArrayLane               : memrefTy.getShape()[2]
-    // arrayBufs                  : memref<gridRows*gridCols x memArrayRows x memArrayLane x f32>
-    // Result shape              : <1 x (gridRows * memArrayLane) x f32>
-    // Reduction                 : column-wise reduction of arrays into row buffers
-
-    // ================================================================
-    // Constants
-    // ================================================================
-    auto f32Ty   = builder.getF32Type();
-
-    Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
-
-    Value cGridRows = builder.create<arith::ConstantIndexOp>(loc, gridRows);
-    Value cGridCols = builder.create<arith::ConstantIndexOp>(loc, gridCols);
-    Value cLane     = builder.create<arith::ConstantIndexOp>(loc, memArrayLane);
-
-    Value c0f = builder.create<arith::ConstantFloatOp>(loc, f32Ty, llvm::APFloat(0.0f));
-
-
-    // ================================================================
-    // Row-wise reduction buffers: gridRows  x lane
-    // ================================================================
-    auto rowBufTy = MemRefType::get({gridRows, memArrayLane}, f32Ty);
-    Value rowBufs = builder.create<memref::AllocOp>(loc, rowBufTy);
-
-    // ================================================================
-    // Initialize row buffers to zero
-    // ================================================================
-    builder.create<scf::ForOp>(
-      loc, c0, cGridRows, c1, ValueRange{},
-      [&](OpBuilder &b1, Location loc, Value r, ValueRange) {
-
-        b1.create<scf::ForOp>(
-          loc, c0, cLane, c1, ValueRange{},
-          [&](OpBuilder &b2, Location loc, Value j, ValueRange) {
-
-            b2.create<memref::StoreOp>(
-              loc, c0f, rowBufs, ValueRange{r, j});
-
-            b2.create<scf::YieldOp>(loc);
-
-          });
-
-        b1.create<scf::YieldOp>(loc);
-      });
-
-    // ================================================================
-    // Reduce column arrays into row arrays
-    // arrayId = r * gridCols + c
-    // ================================================================
-    builder.create<scf::ForOp>(
-      loc, c0, cGridRows, c1, ValueRange{},
-      [&](OpBuilder &b1, Location loc, Value r, ValueRange) {
-
-        b1.create<scf::ForOp>(
-          loc, c0, cGridCols, c1, ValueRange{},
-          [&](OpBuilder &b2, Location loc, Value c, ValueRange) {
-
-            b2.create<scf::ForOp>(
-              loc, c0, cLane, c1, ValueRange{},
-              [&](OpBuilder &b3, Location loc, Value j, ValueRange) {
-
-                // Get temporary row buffers
-                Value acc = b3.create<memref::LoadOp>(loc, rowBufs, ValueRange{r, j});
-
-                // Get array results
-                Value val = b3.create<memref::LoadOp>(loc, memrefVal, ValueRange{r, c, j});
-
-                // temporary row buffer += val
-                Value sum = b3.create<arith::AddFOp>(loc, acc, val);
-                b3.create<memref::StoreOp>(loc, sum, rowBufs, ValueRange{r, j});
-
-                b3.create<scf::YieldOp>(loc);
-              });
-            
-              b2.create<scf::YieldOp>(loc);
-          });
-
-          b1.create<scf::YieldOp>(loc);
-      });
-
-    // ================================================================
-    // Assemble final output vector trimmed by matrix rows: 1 x matrixRows
-    // col = r * lane + j
-    // ================================================================
-    int64_t outCols = matrixRows;
-    auto outTy = MemRefType::get({1, outCols}, f32Ty);
-    Value out = builder.create<memref::AllocOp>(loc, outTy);
-    Value cMatrixRows = builder.create<arith::ConstantIndexOp>(loc, matrixRows);
-
-    builder.create<scf::ForOp>(
-      loc, c0, cGridRows, c1, ValueRange{},
-      [&](OpBuilder &b1, Location loc, Value r, ValueRange) {
-
-        b1.create<scf::ForOp>(
-          loc, c0, cLane, c1, ValueRange{},
-          [&](OpBuilder &b2, Location loc, Value j, ValueRange) {
-
-            // Load value from temporary buffer
-            Value v = b2.create<memref::LoadOp>(loc, rowBufs, ValueRange{r, j});
-
-            // compute index
-            Value colOffset = b2.create<arith::MulIOp>(loc, r, cLane);
-            Value col = b2.create<arith::AddIOp>(loc, colOffset, j);
-
-            // Skip padded rows from the final row block.
-            Value inBounds = b2.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::slt, col, cMatrixRows);
-            b2.create<scf::IfOp>(loc, inBounds, [&](OpBuilder &b3, Location loc) {
-              b3.create<memref::StoreOp>(loc, v, out, ValueRange{c0, col});
-              b3.create<scf::YieldOp>(loc);
-            });
-              
-            b2.create<scf::YieldOp>(loc);
-          });
-
-        b1.create<scf::YieldOp>(loc);
-      });
-
-    // ================================================================
-    // Materialize tensor result
-    // ================================================================
-    auto resultTy = RankedTensorType::get({1, outCols}, f32Ty);
-    auto toTensor = builder.create<bufferization::ToTensorOp>(loc, resultTy, out);
-    toTensor->setAttr("restrict", builder.getUnitAttr());
+    if (!*maybePlan) {
+      return;
+    }
+    if (failed(rewriteReducedMatmul(builder, op, **maybePlan))) {
+      hadError = true;
+    }
   });
+
+  if (hadError) {
+    signalPassFailure();
+  }
 }
+
+
+// Declares the dialects this pass may create while reducing memref
+// buffers back into tensor values.
 
 void ReduceResultsPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
 }
+
+
+// Builds a new instance of the pass for registration and pipeline
+// construction.
 
 std::unique_ptr<mlir::Pass> createReduceResultsPass() {
   return std::make_unique<ReduceResultsPass>();

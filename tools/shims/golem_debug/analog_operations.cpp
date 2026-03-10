@@ -26,6 +26,18 @@
 #define GOLEM_DEBUG_ARRAY_COLS 8
 #endif
 
+#ifndef GOLEM_DEBUG_SLEEP_MS
+#define GOLEM_DEBUG_SLEEP_MS 0
+#endif
+
+#ifndef GOLEM_DEBUG_LOG_OPERATIONS
+#define GOLEM_DEBUG_LOG_OPERATIONS 0
+#endif
+
+#ifndef GOLEM_DEBUG_DUMP_ARRAY_STATE
+#define GOLEM_DEBUG_DUMP_ARRAY_STATE 0
+#endif
+
 using analog::shims::ComputeArray;
 
 /*
@@ -50,15 +62,19 @@ static std::vector<ComputeArray> createWorkerLocalArrays() {
 
 
 /*
-  logCoreAndSleep(const char* fnName)
+  logCoreAndMaybeSleep(const char* fnName)
 
   Debug helper to show which CPU core is executing the shim and make
   concurrent execution easier to observe in logs.
 */
-static int logCoreAndSleep(const char *fnName) {
+static int logCoreAndMaybeSleep(const char *fnName) {
   int core = sched_getcpu();
+#if GOLEM_DEBUG_LOG_OPERATIONS
   std::printf("[operation shim] %s running on CORE#%d\n", fnName, core);
-  std::this_thread::sleep_for(std::chrono::seconds(2));
+#endif
+#if GOLEM_DEBUG_SLEEP_MS > 0
+  std::this_thread::sleep_for(std::chrono::milliseconds(GOLEM_DEBUG_SLEEP_MS));
+#endif
   return core;
 }
 
@@ -111,7 +127,7 @@ static ComputeArray &getWorkerLocalArray(int32_t rawArrayId,
   matrix state, and prints a debug dump.
 */
 extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
-  int core = logCoreAndSleep("mvm.set");
+  int core = logCoreAndMaybeSleep("mvm.set");
 
   int32_t workerSlot = -1;
   int32_t arrayId = -1;
@@ -126,6 +142,7 @@ extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
 
   array.setMatrixFromRowMajor(src, srcStride);
 
+#if GOLEM_DEBUG_LOG_OPERATIONS
   std::printf(
       "[operation shim] mvm.set   ptr=%p worker=%d array=%d raw=%d matrix_width=%d rows=%d cols=%d core=%d\n",
       data,
@@ -136,7 +153,10 @@ extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
       rows,
       cols,
       core);
+#endif
+#if GOLEM_DEBUG_DUMP_ARRAY_STATE
   array.dumpMatrix("matrix");
+#endif
 }
 
 
@@ -146,7 +166,7 @@ extern "C" void golem_debug_mvm_set(void *data, int32_t packedArrayId) {
   Debug shim implementation for the analog vector-load operation.
 */
 extern "C" void golem_debug_mvm_load(void *data, int32_t rawArrayId) {
-  int core = logCoreAndSleep("mvm.load");
+  int core = logCoreAndMaybeSleep("mvm.load");
 
   int32_t workerSlot = -1;
   int32_t arrayId = -1;
@@ -155,6 +175,7 @@ extern "C" void golem_debug_mvm_load(void *data, int32_t rawArrayId) {
 
   array.loadVector(src);
 
+#if GOLEM_DEBUG_LOG_OPERATIONS
   std::printf(
       "[operation shim] mvm.load  ptr=%p worker=%d array=%d raw=%d cols=%d core=%d\n",
       data,
@@ -163,7 +184,10 @@ extern "C" void golem_debug_mvm_load(void *data, int32_t rawArrayId) {
       static_cast<int>(rawArrayId),
       array.cols(),
       core);
+#endif
+#if GOLEM_DEBUG_DUMP_ARRAY_STATE
   array.dumpInputVector("input");
+#endif
 }
 
 
@@ -173,7 +197,7 @@ extern "C" void golem_debug_mvm_load(void *data, int32_t rawArrayId) {
   Debug shim implementation for the analog compute operation.
 */
 extern "C" void golem_debug_mvm_compute(int32_t rawArrayId) {
-  int core = logCoreAndSleep("mvm.compute");
+  int core = logCoreAndMaybeSleep("mvm.compute");
 
   int32_t workerSlot = -1;
   int32_t arrayId = -1;
@@ -181,12 +205,16 @@ extern "C" void golem_debug_mvm_compute(int32_t rawArrayId) {
 
   array.compute();
 
+#if GOLEM_DEBUG_LOG_OPERATIONS
   std::printf("[operation shim] mvm.compute worker=%d array=%d raw=%d core=%d\n",
               workerSlot,
               arrayId,
               static_cast<int>(rawArrayId),
               core);
+#endif
+#if GOLEM_DEBUG_DUMP_ARRAY_STATE
   array.dumpOutputVector("output");
+#endif
 }
 
 
@@ -196,7 +224,7 @@ extern "C" void golem_debug_mvm_compute(int32_t rawArrayId) {
   Debug shim implementation for the analog output-store operation.
 */
 extern "C" void golem_debug_mvm_store(void *data, int32_t rawArrayId) {
-  int core = logCoreAndSleep("mvm.store");
+  int core = logCoreAndMaybeSleep("mvm.store");
 
   int32_t workerSlot = -1;
   int32_t arrayId = -1;
@@ -205,6 +233,7 @@ extern "C" void golem_debug_mvm_store(void *data, int32_t rawArrayId) {
 
   array.storeOutput(dst);
 
+#if GOLEM_DEBUG_LOG_OPERATIONS
   std::printf(
       "[operation shim] mvm.store ptr=%p worker=%d array=%d raw=%d rows=%d core=%d\n",
       data,
@@ -213,4 +242,5 @@ extern "C" void golem_debug_mvm_store(void *data, int32_t rawArrayId) {
       static_cast<int>(rawArrayId),
       array.rows(),
       core);
+#endif
 }

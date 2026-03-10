@@ -10,6 +10,21 @@ namespace mlir {
 namespace analog {
 namespace {
 
+constexpr StringLiteral kDebugSetName = "golem_debug_mvm_set";
+constexpr StringLiteral kDebugLoadName = "golem_debug_mvm_load";
+constexpr StringLiteral kDebugStoreName = "golem_debug_mvm_store";
+constexpr StringLiteral kDebugComputeName = "golem_debug_mvm_compute";
+
+struct ShimRewriteRule {
+  StringRef sourceName;
+  StringRef targetName;
+  unsigned minOperands;
+  bool passesPointer;
+};
+
+
+// Creates or reuses a private LLVM declaration for one debug shim so
+// rewritten backend calls always have a valid callee.
 static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
                                             LLVM::LLVMFunctionType type) {
   if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name)) {
@@ -22,6 +37,9 @@ static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
   return fn;
 }
 
+
+// Recovers the logical data pointer from either exploded memref operands
+// or extracted memref-descriptor pieces.
 static Value getDataPtrOperand(LLVM::CallOp call) {
   auto buildPtrWithOffset = [&](Value basePtr, Value offset) -> Value {
     if (!basePtr || !offset)
@@ -65,122 +83,79 @@ static Value getDataPtrOperand(LLVM::CallOp call) {
   return ptr;
 }
 
-} // namespace
 
-llvm::StringRef ConvertAnalogToDebugShimsPass::getArgument() const {
-  return "analog-convert-to-debug-shims";
-}
-
-llvm::StringRef ConvertAnalogToDebugShimsPass::getDescription() const {
-  return "Rewrite analog backend calls to debug shim call targets for simulation/instrumentation";
-}
-
-void ConvertAnalogToDebugShimsPass::getDependentDialects(
-    DialectRegistry &registry) const {
-  registry.insert<LLVM::LLVMDialect>();
-}
-
-void ConvertAnalogToDebugShimsPass::runOnOperation() {
-  ModuleOp module = getOperation();
-  MLIRContext *ctx = module.getContext();
-
+// Declares all debug shim entrypoints that this pass may rewrite calls to
+// so later replacements can refer to stable symbols.
+static void ensureDebugShimDecls(ModuleOp module, MLIRContext *ctx) {
   auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
   getOrCreateLLVMFunc(
-      module, "golem_debug_mvm_set",
+      module, kDebugSetName,
       LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
   getOrCreateLLVMFunc(
-      module, "golem_debug_mvm_load",
+      module, kDebugLoadName,
       LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
   getOrCreateLLVMFunc(
-      module, "golem_debug_mvm_store",
+      module, kDebugStoreName,
       LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
   getOrCreateLLVMFunc(
-      module, "golem_debug_mvm_compute",
+      module, kDebugComputeName,
       LLVM::LLVMFunctionType::get(voidTy, {i32Ty}, false));
+}
 
-  module.walk([&](LLVM::CallOp call) {
-    auto calleeAttr = call.getCalleeAttr();
-    if (!calleeAttr) {
-      return;
-    }
 
-    StringRef callee = calleeAttr.getValue();
+// Returns the debug-shim rewrite rule for a recognized backend call name
+// and leaves unrelated calls untouched.
+static const ShimRewriteRule *findShimRewriteRule(StringRef callee) {
+  static constexpr ShimRewriteRule kRules[] = {
+      {"golem_analog_mvm_set", kDebugSetName, 2, true},
+      {"llvm.riscv.golem.analog.mvm.set", kDebugSetName, 2, true},
+      {"golem_analog_mvm_load", kDebugLoadName, 2, true},
+      {"llvm.riscv.golem.analog.mvm.load", kDebugLoadName, 2, true},
+      {"golem_analog_mvm_store", kDebugStoreName, 2, true},
+      {"llvm.riscv.golem.analog.mvm.store", kDebugStoreName, 2, true},
+      {"golem_analog_mvm_compute", kDebugComputeName, 1, false},
+      {"llvm.riscv.golem.analog.mvm", kDebugComputeName, 1, false},
+  };
 
-    if (callee == "golem_analog_mvm_set" ||
-        callee == "llvm.riscv.golem.analog.mvm.set") {
-      if (call.getNumOperands() < 2) {
-        return;
-      }
+  for (const ShimRewriteRule &rule : kRules) {
+    if (callee == rule.sourceName)
+      return &rule;
+  }
 
-      Value ptr = getDataPtrOperand(call);
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
+  return nullptr;
+}
 
-      OpBuilder b(call);
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, "golem_debug_mvm_set"),
-          SmallVector<Value>{ptr, arrayId});
-      call.erase();
-      return;
-    }
 
-    if (callee == "golem_analog_mvm_load" ||
-        callee == "llvm.riscv.golem.analog.mvm.load") {
-      if (call.getNumOperands() < 2) {
-        return;
-      }
+// Rewrites one backend call to the matching debug shim and forwards the
+// extracted data pointer when the intrinsic operates on a buffer.
+static bool rewriteCallToDebugShim(LLVM::CallOp call, MLIRContext *ctx) {
+  auto calleeAttr = call.getCalleeAttr();
+  if (!calleeAttr)
+    return false;
 
-      Value ptr = getDataPtrOperand(call);
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
+  const ShimRewriteRule *rule = findShimRewriteRule(calleeAttr.getValue());
+  if (!rule || call.getNumOperands() < rule->minOperands)
+    return false;
 
-      OpBuilder b(call);
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, "golem_debug_mvm_load"),
-          SmallVector<Value>{ptr, arrayId});
-      call.erase();
-      return;
-    }
+  SmallVector<Value> operands;
+  if (rule->passesPointer)
+    operands.push_back(getDataPtrOperand(call));
+  operands.push_back(call.getOperand(call.getNumOperands() - 1));
 
-    if (callee == "golem_analog_mvm_store" ||
-        callee == "llvm.riscv.golem.analog.mvm.store") {
-      if (call.getNumOperands() < 2) {
-        return;
-      }
+  OpBuilder b(call);
+  b.create<LLVM::CallOp>(call.getLoc(), TypeRange{},
+                         SymbolRefAttr::get(ctx, rule->targetName), operands);
+  call.erase();
+  return true;
+}
 
-      Value ptr = getDataPtrOperand(call);
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
 
-      OpBuilder b(call);
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, "golem_debug_mvm_store"),
-          SmallVector<Value>{ptr, arrayId});
-      call.erase();
-      return;
-    }
-
-    if (callee == "golem_analog_mvm_compute" ||
-        callee == "llvm.riscv.golem.analog.mvm") {
-      if (call.getNumOperands() < 1) {
-        return;
-      }
-
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
-
-      OpBuilder b(call);
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, "golem_debug_mvm_compute"),
-          SmallVector<Value>{arrayId});
-      call.erase();
-      return;
-    }
-  });
-
+// Deletes obsolete backend declarations after all call sites have been
+// redirected to their debug-shim equivalents.
+static void eraseUnusedBackendDecls(ModuleOp module) {
   for (StringRef oldName : {
            "golem_analog_mvm_set",
            "golem_analog_mvm_load",
@@ -192,13 +167,55 @@ void ConvertAnalogToDebugShimsPass::runOnOperation() {
            "llvm.riscv.golem.analog.mvm",
        }) {
     if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(oldName)) {
-      if (fn.use_empty()) {
+      if (fn.use_empty())
         fn.erase();
-      }
     }
   }
 }
 
+} // namespace
+
+
+// Returns the command-line pipeline name used to invoke this conversion
+// pass from tests and tooling.
+llvm::StringRef ConvertAnalogToDebugShimsPass::getArgument() const {
+  return "analog-convert-to-debug-shims";
+}
+
+
+// Describes that this pass redirects backend calls to debug shim targets
+// for simulation and instrumentation.
+llvm::StringRef ConvertAnalogToDebugShimsPass::getDescription() const {
+  return "Rewrite analog backend calls to debug shim call targets for simulation/instrumentation";
+}
+
+
+// Registers the LLVM dialect because the pass rewrites and creates LLVM
+// call operations and declarations.
+void ConvertAnalogToDebugShimsPass::getDependentDialects(
+    DialectRegistry &registry) const {
+  registry.insert<LLVM::LLVMDialect>();
+}
+
+
+// Rewrites recognized backend calls to debug shims, then removes any old
+// backend declarations left without uses.
+void ConvertAnalogToDebugShimsPass::runOnOperation() {
+  ModuleOp module = getOperation();
+  MLIRContext *ctx = module.getContext();
+
+  ensureDebugShimDecls(module, ctx);
+
+  module.walk([&](LLVM::CallOp call) {
+    rewriteCallToDebugShim(call, ctx);
+  });
+
+  eraseUnusedBackendDecls(module);
+}
+
+
+// Creates the pass instance used by registration and conversion pipelines
+// that target the debug shim backend.
 std::unique_ptr<mlir::Pass> createConvertAnalogToDebugShimsPass() {
   return std::make_unique<ConvertAnalogToDebugShimsPass>();
 }

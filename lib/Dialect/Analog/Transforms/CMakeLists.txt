@@ -1,5 +1,7 @@
 add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
+  PrepareConv2DToMatmul.cpp
+  RewriteConv2DToMatmul.cpp
   MaterializeMatrixFromTensor.cpp
   MaterializeVectorFromTensor.cpp
   IsolateLayers.cpp

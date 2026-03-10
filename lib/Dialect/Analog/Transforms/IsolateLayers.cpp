@@ -11,6 +11,9 @@
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir {
@@ -19,6 +22,43 @@ namespace {
 
 using OpChain = SmallVector<Operation *>;
 using OpChainList = SmallVector<OpChain>;
+
+constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initialization";
+constexpr StringLiteral kLayerRoutineAttr = "analog-layer-routine";
+constexpr StringLiteral kWeightIdAttr = "weight-id";
+constexpr StringLiteral kLayerIdAttr = "layer-id";
+constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
+constexpr StringLiteral kLayerRoutinePrefix = "analog_layer_routine_";
+
+
+// Walks up the parent chain until it finds the top-level operation
+// directly owned by the surrounding function body.
+
+static Operation *findTopLevelOwner(Operation *op) {
+  Operation *top = op;
+  while (top && !isa<func::FuncOp>(top->getParentOp()))
+    top = top->getParentOp();
+  return top;
+}
+
+
+// Collects every operation in the segment, including nested ops, so
+// later analyses can reason about closure and escaping uses.
+
+static DenseSet<Operation *> collectSegmentClosure(ArrayRef<Operation *> segment) {
+  DenseSet<Operation *> inChain;
+  for (Operation *cur : segment) {
+    if (!cur)
+      continue;
+    inChain.insert(cur);
+    cur->walk([&](Operation *nested) { inChain.insert(nested); });
+  }
+  return inChain;
+}
+
+
+// Finds the top-level op segments that initialize analog matrices from
+// dense resource-backed constants.
 
 static void collectMatrixInitializationChains(func::FuncOp func,
                                               OpChainList &matrixChains) {
@@ -56,14 +96,14 @@ static void collectMatrixInitializationChains(func::FuncOp func,
     if (!place)
       return;
 
-    Operation *endTop = place;
-    while (endTop && !isa<func::FuncOp>(endTop->getParentOp()))
-      endTop = endTop->getParentOp();
+    Operation *endTop = findTopLevelOwner(place);
     if (!endTop)
       return;
     if (cst->getBlock() != endTop->getBlock())
       return;
 
+    // Capture the smallest top-level segment that still represents "program
+    // this matrix into the device" without force-moving the source constant.
     OpChain segment;
     // Only move the matrix-init routine ops/containers. Do not force-move the
     // dense constant because it may also feed non-analog ops (e.g. transpose).
@@ -76,15 +116,19 @@ static void collectMatrixInitializationChains(func::FuncOp func,
   });
 }
 
+
+// Finds the op segments that implement one analog layer routine from
+// vector materialization through tensor re-materialization.
+
 static void collectLayerRoutineChains(func::FuncOp func,
                                       OpChainList &layerRoutineChains) {
   func.walk([&](analog::VectorFromTensorOp op) {
-    Operation *startTop = op.getOperation();
-    while (startTop && !isa<func::FuncOp>(startTop->getParentOp()))
-      startTop = startTop->getParentOp();
+    Operation *startTop = findTopLevelOwner(op.getOperation());
     if (!startTop || !startTop->getBlock())
       return;
 
+    // A layer routine starts at the vector materialization boundary and runs
+    // until the first tensor result is materialized back into SSA form.
     Operation *endTop = nullptr;
     for (Operation *cur = startTop; cur; cur = cur->getNextNode()) {
       bool foundToTensor = false;
@@ -108,14 +152,12 @@ static void collectLayerRoutineChains(func::FuncOp func,
   });
 }
 
+
+// Checks whether any value produced inside the segment is consumed by
+// operations outside that segment.
+
 static bool hasEscapingUses(ArrayRef<Operation *> segment) {
-  DenseSet<Operation *> inChain;
-  for (Operation *cur : segment) {
-    if (!cur)
-      continue;
-    inChain.insert(cur);
-    cur->walk([&](Operation *nested) { inChain.insert(nested); });
-  }
+  DenseSet<Operation *> inChain = collectSegmentClosure(segment);
   for (Operation *cur : segment) {
     if (!cur)
       continue;
@@ -138,15 +180,13 @@ static bool hasEscapingUses(ArrayRef<Operation *> segment) {
   return false;
 }
 
+
+// Collects the produced values whose uses extend beyond the outlined
+// segment so wrapper regions can return them.
+
 static void computeEscapingResults(ArrayRef<Operation *> segment,
                                    SmallVectorImpl<Value> &escapingResults) {
-  DenseSet<Operation *> inChain;
-  for (Operation *cur : segment) {
-    if (!cur)
-      continue;
-    inChain.insert(cur);
-    cur->walk([&](Operation *nested) { inChain.insert(nested); });
-  }
+  DenseSet<Operation *> inChain = collectSegmentClosure(segment);
 
   for (Operation *cur : segment) {
     if (!cur)
@@ -166,6 +206,10 @@ static void computeEscapingResults(ArrayRef<Operation *> segment,
     });
   }
 }
+
+
+// Finds arith constants used inside the execute region but defined
+// outside of it.
 
 static SmallVector<arith::ConstantOp>
 collectExternalConstantOpsForRegion(scf::ExecuteRegionOp exec) {
@@ -189,6 +233,10 @@ collectExternalConstantOpsForRegion(scf::ExecuteRegionOp exec) {
   return constants;
 }
 
+
+// Returns whether the given operation is nested anywhere inside the
+// target region.
+
 static bool isOpInsideRegion(Operation *op, Region &region) {
   for (Region *r = op ? op->getParentRegion() : nullptr; r; ) {
     if (r == &region)
@@ -199,6 +247,10 @@ static bool isOpInsideRegion(Operation *op, Region &region) {
   return false;
 }
 
+
+// Checks whether all uses of the constant stay within the target
+// region boundary.
+
 static bool allUsesInsideRegion(arith::ConstantOp cst, Region &region) {
   for (Operation *user : cst->getUsers()) {
     if (!isOpInsideRegion(user, region))
@@ -207,11 +259,133 @@ static bool allUsesInsideRegion(arith::ConstantOp cst, Region &region) {
   return true;
 }
 
+
+// Rewrites only the uses of a value that occur within the target
+// region.
+
 static void replaceUsesInsideRegion(Value oldValue, Value newValue, Region &region) {
   oldValue.replaceUsesWithIf(newValue, [&](OpOperand &use) {
     return isOpInsideRegion(use.getOwner(), region);
   });
 }
+
+
+// Moves each top-level operation from the segment into the destination
+// block while skipping null or detached entries.
+
+static void moveSegmentIntoBlock(ArrayRef<Operation *> segment, Block *body) {
+  for (Operation *cur : segment) {
+    if (!cur || !cur->getBlock())
+      continue;
+    cur->moveBefore(body, body->end());
+  }
+}
+
+
+// Creates the canonical body and exit blocks for a new execute region
+// and adds them to the region.
+
+static std::pair<Block *, Block *> createExecuteRegionBlocks(
+    scf::ExecuteRegionOp exec) {
+  Block *body = new Block();
+  Block *exit = new Block();
+  exec.getRegion().push_back(body);
+  exec.getRegion().push_back(exit);
+  return {body, exit};
+}
+
+
+// Collects execute regions carrying a specific tag so they can be
+// rewritten after the walk is complete.
+
+static SmallVector<scf::ExecuteRegionOp> collectTaggedExecuteRegions(
+    func::FuncOp func, StringRef tag) {
+  SmallVector<scf::ExecuteRegionOp> execs;
+  func.walk([&](scf::ExecuteRegionOp exec) {
+    if (exec->hasAttr(tag))
+      execs.push_back(exec);
+  });
+  return execs;
+}
+
+
+// Extracts the numeric id stored under the execute-region tag
+// attribute.
+
+static std::optional<int64_t> getTaggedRegionId(scf::ExecuteRegionOp exec,
+                                                StringRef tag) {
+  auto attr = exec->getAttrOfType<IntegerAttr>(tag);
+  if (!attr)
+    return std::nullopt;
+  return attr.getValue().getSExtValue();
+}
+
+
+// Returns the parent module that owns any helper functions outlined
+// from the current function.
+
+static ModuleOp getOutliningModule(func::FuncOp forward) {
+  return forward ? forward->getParentOfType<ModuleOp>() : ModuleOp();
+}
+
+
+// Builds the symbol name for an outlined helper from its prefix and
+// numeric id.
+
+static std::string buildOutlinedFunctionName(StringRef prefix, int64_t id) {
+  return (prefix + std::to_string(id)).str();
+}
+
+
+// Clones non-terminator operations from the source block into the
+// builder while keeping the IR mapping current.
+
+static void cloneOutlinedOpsIntoBuilder(Block &source, OpBuilder &builder,
+                                        IRMapping &mapper) {
+  for (Operation &op : source) {
+    if (isa<cf::BranchOp, scf::YieldOp>(op))
+      continue;
+    Operation *cloned = builder.clone(op, mapper);
+    for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
+      mapper.map(oldRes, newRes);
+  }
+}
+
+
+// Finds the first vector materialization in the execute region so the
+// outlined layer keeps the original tensor input contract.
+
+static analog::VectorFromTensorOp
+findFirstVectorFromTensor(scf::ExecuteRegionOp exec) {
+  analog::VectorFromTensorOp firstVectorFromTensor;
+  exec.getRegion().walk([&](analog::VectorFromTensorOp op) {
+    if (!firstVectorFromTensor)
+      firstVectorFromTensor = op;
+  });
+  return firstVectorFromTensor;
+}
+
+
+// Maps the exit-branch operands from the outlined layer body into the
+// cloned function and returns them as function results.
+
+static FailureOr<SmallVector<Value>> getOutlinedLayerReturns(Block &bodyBlk,
+                                                             Block &exitBlk,
+                                                             IRMapping &mapper) {
+  auto br = dyn_cast<cf::BranchOp>(bodyBlk.getTerminator());
+  if (!br || br.getDest() != &exitBlk)
+    return failure();
+
+  SmallVector<Value> returns;
+  returns.reserve(br.getNumOperands());
+  for (Value v : br.getDestOperands())
+    returns.push_back(mapper.lookupOrDefault(v));
+  return returns;
+}
+
+
+// Moves or clones constants into execute regions so outlined helpers
+// do not depend on outer-scope constant definitions.
 
 static void pullExternalConstantsIntoExecuteRegions(func::FuncOp func) {
   SmallVector<scf::ExecuteRegionOp> execs;
@@ -233,6 +407,8 @@ static void pullExternalConstantsIntoExecuteRegions(func::FuncOp func) {
       if (!cst || !cst->getBlock())
         continue;
 
+      // Dense resource constants can be moved wholesale when all uses are
+      // internal; everything else is cloned to avoid mutating outer uses.
       bool isDense = isa<DenseResourceElementsAttr>(cst.getValue());
       if (isDense && allUsesInsideRegion(cst, exec.getRegion())) {
         cst->moveBefore(&entry, entry.begin());
@@ -244,6 +420,10 @@ static void pullExternalConstantsIntoExecuteRegions(func::FuncOp func) {
     }
   }
 }
+
+
+// Wraps matrix-initialization segments in execute regions so they can
+// be outlined into helper functions later.
 
 static void wrapMatrixInitializationChains(func::FuncOp func, OpChainList &matrixChains) {
   int64_t matrixInitCount = 0;
@@ -257,21 +437,15 @@ static void wrapMatrixInitializationChains(func::FuncOp func, OpChainList &matri
       continue;
 
     OpBuilder b(first);
+    // Execute regions give the later outlining step a single container to
+    // replace with a helper function call.
     auto exec = b.create<scf::ExecuteRegionOp>(first->getLoc(), TypeRange{});
-    exec->setAttr("analog-matrix-initialization",
+    exec->setAttr(kMatrixInitializationAttr,
                   IntegerAttr::get(IndexType::get(func.getContext()),
                                    matrixInitCount++));
 
-    Block *body = new Block();
-    Block *exit = new Block();
-    exec.getRegion().push_back(body);
-    exec.getRegion().push_back(exit);
-
-    for (Operation *cur : segment) {
-      if (!cur || !cur->getBlock())
-        continue;
-      cur->moveBefore(body, body->end());
-    }
+    auto [body, exit] = createExecuteRegionBlocks(exec);
+    moveSegmentIntoBlock(segment, body);
 
     OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
     bodyBuilder.create<cf::BranchOp>(first->getLoc(), exit);
@@ -280,6 +454,10 @@ static void wrapMatrixInitializationChains(func::FuncOp func, OpChainList &matri
     exitBuilder.create<scf::YieldOp>(first->getLoc());
   }
 }
+
+
+// Wraps layer-routine segments in execute regions and returns any
+// values that escape those segments.
 
 static void wrapLayerRoutineChains(func::FuncOp func, OpChainList &layerRoutineChains) {
   int64_t layerRoutineCount = 0;
@@ -300,25 +478,16 @@ static void wrapLayerRoutineChains(func::FuncOp func, OpChainList &layerRoutineC
 
     OpBuilder b(first);
     auto exec = b.create<scf::ExecuteRegionOp>(first->getLoc(), resultTypes);
-    exec->setAttr("analog-layer-routine",
+    exec->setAttr(kLayerRoutineAttr,
                   IntegerAttr::get(IndexType::get(func.getContext()),
                                    layerRoutineCount++));
 
-    Block *body = new Block();
-    Block *exit = new Block();
+    auto [body, exit] = createExecuteRegionBlocks(exec);
     for (Value v : escapingResults)
       exit->addArgument(v.getType(), first->getLoc());
-    exec.getRegion().push_back(body);
-    exec.getRegion().push_back(exit);
 
-    DenseSet<Operation *> inChain;
-    for (Operation *cur : segment) {
-      if (!cur || !cur->getBlock())
-        continue;
-      inChain.insert(cur);
-      cur->walk([&](Operation *nested) { inChain.insert(nested); });
-      cur->moveBefore(body, body->end());
-    }
+    DenseSet<Operation *> inChain = collectSegmentClosure(segment);
+    moveSegmentIntoBlock(segment, body);
 
     OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
     bodyBuilder.create<cf::BranchOp>(first->getLoc(), exit, escapingResults);
@@ -337,22 +506,28 @@ static void wrapLayerRoutineChains(func::FuncOp func, OpChainList &layerRoutineC
   }
 }
 
+
+// Outlines one matrix-initialization execute region into a private
+// helper function and replaces the region with a call.
+
 static void convertMatrixRegionToFunctionBody(func::FuncOp forward,
                                               scf::ExecuteRegionOp exec) {
-  auto attr = exec->getAttrOfType<IntegerAttr>("analog-matrix-initialization");
-  if (!attr)
+  std::optional<int64_t> maybeId =
+      getTaggedRegionId(exec, kMatrixInitializationAttr);
+  if (!maybeId)
     return;
   if (exec.getNumResults() != 0)
     return;
   if (exec.getRegion().empty())
     return;
 
-  ModuleOp module = forward->getParentOfType<ModuleOp>();
+  ModuleOp module = getOutliningModule(forward);
   if (!module)
     return;
 
-  int64_t id = attr.getValue().getSExtValue();
-  std::string fnName = "analog_matrix_initialization_" + std::to_string(id);
+  int64_t id = *maybeId;
+  std::string fnName =
+      buildOutlinedFunctionName(kMatrixInitializationPrefix, id);
 
   func::FuncOp outlined = module.lookupSymbol<func::FuncOp>(fnName);
   if (!outlined) {
@@ -369,29 +544,24 @@ static void convertMatrixRegionToFunctionBody(func::FuncOp forward,
     // Matrix initialization execute regions are currently emitted in a
     // canonical 2-block shape: body block + exit block with scf.yield.
     for (Block &blk : exec.getRegion()) {
-      for (Operation &op : blk) {
-        if (isa<cf::BranchOp, scf::YieldOp>(op))
-          continue;
-        Operation *cloned = b.clone(op, mapper);
-        for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
-          mapper.map(oldRes, newRes);
-      }
+      cloneOutlinedOpsIntoBuilder(blk, b, mapper);
     }
     b.create<func::ReturnOp>(exec.getLoc());
   }
 
   OpBuilder b(exec);
   auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(), TypeRange{}, ValueRange{});
-  call->setAttr("weight-id", b.getI64IntegerAttr(id));
+  call->setAttr(kWeightIdAttr, b.getI64IntegerAttr(id));
   exec.erase();
 }
 
+
+// Converts all tagged matrix-initialization execute regions in the
+// function into helper function calls.
+
 static void convertMatrixRegionsToFunctionBodies(func::FuncOp forward) {
-  SmallVector<scf::ExecuteRegionOp> execs;
-  forward.walk([&](scf::ExecuteRegionOp exec) {
-    if (exec->hasAttr("analog-matrix-initialization"))
-      execs.push_back(exec);
-  });
+  SmallVector<scf::ExecuteRegionOp> execs =
+      collectTaggedExecuteRegions(forward, kMatrixInitializationAttr);
 
   for (scf::ExecuteRegionOp exec : execs) {
     if (exec && exec->getBlock())
@@ -399,31 +569,32 @@ static void convertMatrixRegionsToFunctionBodies(func::FuncOp forward) {
   }
 }
 
+
+// Outlines one layer-routine execute region into a private helper
+// function that preserves the original tensor input contract.
+
 static void convertLayerRegionToFunctionBody(func::FuncOp forward,
                                              scf::ExecuteRegionOp exec) {
-  auto attr = exec->getAttrOfType<IntegerAttr>("analog-layer-routine");
-  if (!attr)
+  std::optional<int64_t> maybeId = getTaggedRegionId(exec, kLayerRoutineAttr);
+  if (!maybeId)
     return;
   if (exec.getRegion().empty() || exec.getRegion().getBlocks().size() < 2)
     return;
 
-  // The layer routine function takes the tensor feeding the first
-  // analog.vector.from_tensor in the region.
-  analog::VectorFromTensorOp firstVectorFromTensor;
-  exec.getRegion().walk([&](analog::VectorFromTensorOp op) {
-    if (!firstVectorFromTensor)
-      firstVectorFromTensor = op;
-  });
+  // The outlined layer entrypoint keeps the original tensor input contract:
+  // whatever fed the first analog.vector.from_tensor becomes the function arg.
+  analog::VectorFromTensorOp firstVectorFromTensor =
+      findFirstVectorFromTensor(exec);
   if (!firstVectorFromTensor)
     return;
   Value layerInput = firstVectorFromTensor.getOperand();
 
-  ModuleOp module = forward->getParentOfType<ModuleOp>();
+  ModuleOp module = getOutliningModule(forward);
   if (!module)
     return;
 
-  int64_t id = attr.getValue().getSExtValue();
-  std::string fnName = "analog_layer_routine_" + std::to_string(id);
+  int64_t id = *maybeId;
+  std::string fnName = buildOutlinedFunctionName(kLayerRoutinePrefix, id);
 
   func::FuncOp outlined = module.lookupSymbol<func::FuncOp>(fnName);
   if (!outlined) {
@@ -444,39 +615,30 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
     Block &bodyBlk = exec.getRegion().front();
     Block &exitBlk = exec.getRegion().back();
 
-    for (Operation &op : bodyBlk) {
-      if (isa<cf::BranchOp, scf::YieldOp>(op))
-        continue;
-      Operation *cloned = b.clone(op, mapper);
-      for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
-        mapper.map(oldRes, newRes);
-    }
+    cloneOutlinedOpsIntoBuilder(bodyBlk, b, mapper);
 
-    auto br = dyn_cast<cf::BranchOp>(bodyBlk.getTerminator());
-    if (!br || br.getDest() != &exitBlk)
+    FailureOr<SmallVector<Value>> returns =
+        getOutlinedLayerReturns(bodyBlk, exitBlk, mapper);
+    if (failed(returns))
       return;
-
-    SmallVector<Value> returns;
-    returns.reserve(br.getNumOperands());
-    for (Value v : br.getDestOperands())
-      returns.push_back(mapper.lookupOrDefault(v));
-    b.create<func::ReturnOp>(exec.getLoc(), returns);
+    b.create<func::ReturnOp>(exec.getLoc(), *returns);
   }
 
   OpBuilder b(exec);
   auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(),
                                      exec.getResultTypes(), ValueRange{layerInput});
-  call->setAttr("layer-id", b.getI64IntegerAttr(id));
+  call->setAttr(kLayerIdAttr, b.getI64IntegerAttr(id));
   exec.replaceAllUsesWith(call.getResults());
   exec.erase();
 }
 
+
+// Converts all tagged layer-routine execute regions in the function
+// into helper function calls.
+
 static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
-  SmallVector<scf::ExecuteRegionOp> execs;
-  forward.walk([&](scf::ExecuteRegionOp exec) {
-    if (exec->hasAttr("analog-layer-routine"))
-      execs.push_back(exec);
-  });
+  SmallVector<scf::ExecuteRegionOp> execs =
+      collectTaggedExecuteRegions(forward, kLayerRoutineAttr);
 
   for (scf::ExecuteRegionOp exec : execs) {
     if (exec && exec->getBlock())
@@ -486,13 +648,25 @@ static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
 
 } // namespace
 
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
+
 llvm::StringRef IsolateLayersPass::getArgument() const {
   return "analog-isolate-layers-and-weights";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef IsolateLayersPass::getDescription() const {
   return "Isolate layer routines and weight-initialization routines into helper functions";
 }
+
+
+// Declares the dialects this pass may create while wrapping and
+// outlining execute regions.
 
 void IsolateLayersPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<mlir::arith::ArithDialect>();
@@ -501,6 +675,10 @@ void IsolateLayersPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::scf::SCFDialect>();
 }
+
+
+// Finds analog layer and weight routines, wraps them in execute
+// regions, and outlines them into helper functions.
 
 void IsolateLayersPass::runOnOperation() {
   func::FuncOp func = getOperation();
@@ -516,6 +694,10 @@ void IsolateLayersPass::runOnOperation() {
   convertMatrixRegionsToFunctionBodies(func);
   convertLayerRegionsToFunctionBodies(func);
 }
+
+
+// Builds a new instance of the pass for registration and pipeline
+// construction.
 
 std::unique_ptr<mlir::Pass> createIsolateLayersPass() {
   return std::make_unique<IsolateLayersPass>();

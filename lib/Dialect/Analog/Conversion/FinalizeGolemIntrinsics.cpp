@@ -11,9 +11,27 @@ namespace mlir {
 namespace analog {
 namespace {
 
+constexpr StringLiteral kWrapperSetName = "golem_analog_mvm_set";
+constexpr StringLiteral kWrapperLoadName = "golem_analog_mvm_load";
+constexpr StringLiteral kWrapperStoreName = "golem_analog_mvm_store";
+constexpr StringLiteral kWrapperComputeName = "golem_analog_mvm_compute";
+constexpr StringLiteral kIntrinsicSetName = "llvm.riscv.golem.analog.mvm.set";
+constexpr StringLiteral kIntrinsicLoadName = "llvm.riscv.golem.analog.mvm.load";
+constexpr StringLiteral kIntrinsicStoreName = "llvm.riscv.golem.analog.mvm.store";
+constexpr StringLiteral kIntrinsicComputeName = "llvm.riscv.golem.analog.mvm";
+
+struct IntrinsicRewriteRule {
+  StringRef sourceName;
+  StringRef targetName;
+  unsigned minOperands;
+  bool passesPointer;
+};
+
+
+// Creates or reuses a private LLVM declaration for one final intrinsic so
+// rewritten calls always have a valid symbol target.
 static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
                                             LLVM::LLVMFunctionType type) {
-
   if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name)) {
     return fn;
   }
@@ -24,6 +42,9 @@ static LLVM::LLVMFuncOp getOrCreateLLVMFunc(ModuleOp module, StringRef name,
   return fn;
 }
 
+
+// Recovers the logical data pointer from either exploded memref operands
+// or extracted memref-descriptor pieces.
 static Value getDataPtrOperand(LLVM::CallOp call) {
   auto buildPtrWithOffset = [&](Value basePtr, Value offset) -> Value {
     if (!basePtr || !offset) {
@@ -71,111 +92,128 @@ static Value getDataPtrOperand(LLVM::CallOp call) {
   return ptr;
 }
 
+
+// Declares the final LLVM golem intrinsics that wrapper calls will be
+// rewritten to during this pass.
+static void ensureIntrinsicDecls(ModuleOp module, MLIRContext *ctx) {
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+
+  getOrCreateLLVMFunc(
+      module, kIntrinsicSetName,
+      LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
+  getOrCreateLLVMFunc(
+      module, kIntrinsicLoadName,
+      LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
+  getOrCreateLLVMFunc(
+      module, kIntrinsicStoreName,
+      LLVM::LLVMFunctionType::get(voidTy, {ptrTy, i32Ty}, false));
+  getOrCreateLLVMFunc(
+      module, kIntrinsicComputeName,
+      LLVM::LLVMFunctionType::get(voidTy, {i32Ty}, false));
+}
+
+
+// Returns the rewrite rule for a recognized wrapper call and leaves other
+// LLVM calls untouched.
+static const IntrinsicRewriteRule *findIntrinsicRewriteRule(StringRef callee) {
+  static constexpr IntrinsicRewriteRule kRules[] = {
+      {kWrapperSetName, kIntrinsicSetName, 2, true},
+      {kWrapperLoadName, kIntrinsicLoadName, 2, true},
+      {kWrapperStoreName, kIntrinsicStoreName, 2, true},
+      {kWrapperComputeName, kIntrinsicComputeName, 1, false},
+  };
+
+  for (const IntrinsicRewriteRule &rule : kRules) {
+    if (callee == rule.sourceName)
+      return &rule;
+  }
+
+  return nullptr;
+}
+
+
+// Rewrites one wrapper call to its final intrinsic and forwards the data
+// pointer when the intrinsic operates on a buffer.
+static bool rewriteWrapperCall(LLVM::CallOp call, MLIRContext *ctx) {
+  auto calleeAttr = call.getCalleeAttr();
+  if (!calleeAttr)
+    return false;
+
+  const IntrinsicRewriteRule *rule =
+      findIntrinsicRewriteRule(calleeAttr.getValue());
+  if (!rule || call.getNumOperands() < rule->minOperands)
+    return false;
+
+  SmallVector<Value> operands;
+  if (rule->passesPointer)
+    operands.push_back(getDataPtrOperand(call));
+  operands.push_back(call.getOperand(call.getNumOperands() - 1));
+
+  OpBuilder b(call);
+  b.create<LLVM::CallOp>(call.getLoc(), TypeRange{},
+                         SymbolRefAttr::get(ctx, rule->targetName), operands);
+  call.erase();
+  return true;
+}
+
+
+// Removes wrapper declarations that become dead after all call sites have
+// been redirected to final intrinsics.
+static void eraseUnusedWrapperDecls(ModuleOp module) {
+  for (StringRef oldName : {kWrapperSetName, kWrapperLoadName, kWrapperStoreName,
+                            kWrapperComputeName}) {
+    if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(oldName)) {
+      if (fn.use_empty())
+        fn.erase();
+    }
+  }
+}
+
 } // namespace
 
+
+// Returns the command-line name used to invoke this finalization pass in
+// pipelines and tests.
 llvm::StringRef FinalizeGolemIntrinsicsPass::getArgument() const {
   return "analog-finalize-golem-intrinsics";
 }
 
+
+// Describes that this pass rewrites wrapper calls into the final LLVM
+// golem intrinsic entrypoints.
 llvm::StringRef FinalizeGolemIntrinsicsPass::getDescription() const {
   return "Rewrite golem wrapper calls into final LLVM RISC-V golem intrinsic calls";
 }
 
+
+// Registers the LLVM dialect because this pass inspects and creates LLVM
+// declarations and call operations.
 void FinalizeGolemIntrinsicsPass::getDependentDialects(
     DialectRegistry &registry) const {
   registry.insert<LLVM::LLVMDialect>();
 }
 
+
+// Rewrites golem wrapper calls to their final intrinsic targets, then
+// erases any obsolete wrapper declarations left unused.
 void FinalizeGolemIntrinsicsPass::runOnOperation() {
   ModuleOp module = getOperation();
   MLIRContext *ctx = module.getContext();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-
-  getOrCreateLLVMFunc(
-      module, "llvm.riscv.golem.analog.mvm.set",
-      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {ptrTy, i32Ty},
-                                  false));
-  getOrCreateLLVMFunc(
-      module, "llvm.riscv.golem.analog.mvm.load",
-      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {ptrTy, i32Ty},
-                                  false));
-  getOrCreateLLVMFunc(
-      module, "llvm.riscv.golem.analog.mvm.store",
-      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {ptrTy, i32Ty},
-                                  false));
-  getOrCreateLLVMFunc(
-      module, "llvm.riscv.golem.analog.mvm",
-      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {i32Ty}, false));
+  ensureIntrinsicDecls(module, ctx);
 
   module.walk([&](LLVM::CallOp call) {
-    auto calleeAttr = call.getCalleeAttr();
-    if (!calleeAttr) {
-      return;
-    }
-
-    StringRef callee = calleeAttr.getValue();
-
-    if (callee == "golem_analog_mvm_set" || 
-        callee == "golem_analog_mvm_load" ||
-        callee == "golem_analog_mvm_store") {
-
-      if (call.getNumOperands() < 2) {
-        return;
-      }
-
-      Value ptr = getDataPtrOperand(call);
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
-      OpBuilder b(call);
-      StringRef dst = callee == "golem_analog_mvm_set"
-                          ? "llvm.riscv.golem.analog.mvm.set"
-                          : (callee == "golem_analog_mvm_load"
-                                 ? "llvm.riscv.golem.analog.mvm.load"
-                                 : "llvm.riscv.golem.analog.mvm.store");
-
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, dst),
-          SmallVector<Value>{ptr, arrayId}
-      );
-
-      call.erase();
-      return;
-    }
-
-    if (callee == "golem_analog_mvm_compute") {
-
-      if (call.getNumOperands() < 1) {
-        return;
-      }
-
-      OpBuilder b(call);
-      Value arrayId = call.getOperand(call.getNumOperands() - 1);
-
-      b.create<LLVM::CallOp>(
-          call.getLoc(), TypeRange{},
-          SymbolRefAttr::get(ctx, "llvm.riscv.golem.analog.mvm"),
-          SmallVector<Value>{arrayId}
-      );
-
-      call.erase();
-      return;
-    }
+    rewriteWrapperCall(call, ctx);
   });
 
-  for (StringRef oldName : {"golem_analog_mvm_set",
-                            "golem_analog_mvm_load",
-                            "golem_analog_mvm_store",
-                            "golem_analog_mvm_compute"}) {
-    if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(oldName)) {
-      if (fn.use_empty()) {
-        fn.erase();
-      }
-    }
-  }
+  eraseUnusedWrapperDecls(module);
 }
 
+
+// Creates the pass instance used by registration and lowering pipelines
+// that target final golem intrinsics.
 std::unique_ptr<mlir::Pass> createFinalizeGolemIntrinsicsPass() {
   return std::make_unique<FinalizeGolemIntrinsicsPass>();
 }

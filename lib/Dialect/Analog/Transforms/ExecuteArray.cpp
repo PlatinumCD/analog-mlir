@@ -1,131 +1,242 @@
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
-#include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
+#include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cstdint>
-#include <deque>
-#include <mlir/Dialect/Linalg/IR/Linalg.h>
-#include <mlir/Dialect/Tensor/IR/Tensor.h>
-#include <mlir/IR/Builders.h>
-#include <mlir/IR/BuiltinAttributes.h>
-#include <mlir/IR/DialectRegistry.h>
-#include <mlir/Support/LLVM.h>
+#include "llvm/ADT/DenseMap.h"
+#include "mlir/IR/DialectRegistry.h"
 
+#include <optional>
 
 using namespace mlir;
 
 namespace mlir {
 namespace analog {
 
-// =====--------------------------------=====
-//   ExecuteArrayPass - Pass
-// =====--------------------------------=====
+static constexpr llvm::StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
+static constexpr llvm::StringLiteral kMatmulExecIdAttr = "analog.matmul_exec_id";
+
+struct MatmulExecutionPlan {
+  analog::MatrixGridType gridTy;
+  int64_t arrayRows;
+  int64_t numArrayRows;
+  int64_t numArrayCols;
+};
+
+
+// Builds a lookup from matrix source ids to the partitioned grid types
+// produced earlier in the lowering pipeline.
+
+static llvm::DenseMap<int64_t, analog::MatrixGridType>
+collectMatrixGridsBySourceId(func::FuncOp func) {
+  llvm::DenseMap<int64_t, analog::MatrixGridType> gridByMatrixSourceId;
+  // Build a stable lookup from the matrix-partition stage into the execute
+  // stage. This avoids depending on traversal order or RHS SSA identity.
+  func.walk([&](analog::MatrixPartitionOp op) {
+    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getResult().getType());
+    if (!gridTy) {
+      return;
+    }
+    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+    if (!matrixSourceId) {
+      return;
+    }
+    gridByMatrixSourceId.try_emplace(matrixSourceId.getInt(), gridTy);
+  });
+  return gridByMatrixSourceId;
+}
+
+
+// Resolves the execution plan for a matmul tagged with a matrix source
+// id and reports whether this matmul should be rewritten.
+
+static FailureOr<std::optional<MatmulExecutionPlan>>
+buildMatmulExecutionPlan(
+    linalg::MatmulOp op,
+    const llvm::DenseMap<int64_t, analog::MatrixGridType>
+        &gridByMatrixSourceId) {
+  if (op.getInputs().size() < 2) {
+    op.emitError("expected matmul with two inputs");
+    return failure();
+  }
+
+  auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+  if (!matrixSourceId) {
+    return std::optional<MatmulExecutionPlan>{};
+  }
+  auto it = gridByMatrixSourceId.find(matrixSourceId.getInt());
+  if (it == gridByMatrixSourceId.end()) {
+    op.emitError("could not find analog matrix partition for matmul RHS");
+    return failure();
+  }
+
+  analog::MatrixGridType gridTy = it->second;
+  auto arrayShape = gridTy.getArrayShape();
+  if (arrayShape.size() != 2) {
+    op.emitError("expected matrix grid array shape to be rank-2");
+    return failure();
+  }
+
+  auto gridShape = gridTy.getGridShape();
+  if (gridShape.size() != 2) {
+    op.emitError("expected matrix grid shape to be rank-2");
+    return failure();
+  }
+
+  return std::optional<MatmulExecutionPlan>{MatmulExecutionPlan{
+      gridTy,
+      arrayShape[0],
+      gridShape[0],
+      gridShape[1],
+  }};
+}
+
+
+// Allocates the execution buffer for one matmul and tags both the
+// buffer and source matmul with a shared execution id.
+
+static Value allocateArrayOutputBuffers(OpBuilder &builder, Location loc,
+                                        int64_t numArrayRows,
+                                        int64_t numArrayCols,
+                                        int64_t arrayRows, int64_t execId,
+                                        linalg::MatmulOp op) {
+  auto arrayOutputBuffersTy =
+      mlir::MemRefType::get({numArrayRows, numArrayCols, arrayRows},
+                            builder.getF32Type());
+  Value arrayOutputBuffers =
+      builder.create<memref::AllocOp>(loc, arrayOutputBuffersTy);
+
+  // Tag both the produced buffer and the source matmul so ReduceResults can
+  // reconnect them without relying on neighboring ops in the block.
+  auto arrayOutputBuffersOp =
+      arrayOutputBuffers.getDefiningOp<memref::AllocOp>();
+  arrayOutputBuffersOp->setAttr(kMatmulExecIdAttr,
+                                builder.getI64IntegerAttr(execId));
+  op->setAttr(kMatmulExecIdAttr, builder.getI64IntegerAttr(execId));
+  return arrayOutputBuffers;
+}
+
+
+// Emits the nested loops that execute each placed array and store its
+// output into the allocated buffer grid.
+
+static void emitExecuteAndStoreLoops(OpBuilder &builder, Location loc,
+                                     analog::MatrixGridType gridTy,
+                                     Value arrayOutputBuffers,
+                                     int64_t numArrayRows,
+                                     int64_t numArrayCols) {
+  Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
+  Value ubArrayRows = builder.create<arith::ConstantIndexOp>(loc, numArrayRows);
+  Value ubArrayCols = builder.create<arith::ConstantIndexOp>(loc, numArrayCols);
+
+  builder.create<scf::ForOp>(
+      loc, zero, ubArrayRows, one, ValueRange{},
+      [&](OpBuilder &rowBuilder, Location rowLoc, Value tr, ValueRange) {
+        rowBuilder.create<scf::ForOp>(
+            rowLoc, zero, ubArrayCols, one, ValueRange{},
+            [&](OpBuilder &colBuilder, Location colLoc, Value tc, ValueRange) {
+              Value array =
+                  colBuilder.create<analog::ArrayExecuteOp>(colLoc, gridTy,
+                                                            ValueRange{tr, tc});
+              colBuilder.create<analog::ArrayStoreOp>(
+                  colLoc, array, arrayOutputBuffers, ValueRange{tr, tc});
+              colBuilder.create<scf::YieldOp>(colLoc);
+            });
+        rowBuilder.create<scf::YieldOp>(rowLoc);
+      });
+}
+
+
+// Rewrites one tagged matmul into array execution loops using the
+// precomputed execution plan for its matrix grid.
+
+static LogicalResult rewriteTaggedMatmul(OpBuilder &builder, linalg::MatmulOp op,
+                                         const MatmulExecutionPlan &plan,
+                                         int64_t execId) {
+  Location loc = op.getLoc();
+  Value arrayOutputBuffers = allocateArrayOutputBuffers(
+      builder, loc, plan.numArrayRows, plan.numArrayCols, plan.arrayRows,
+      execId, op);
+  emitExecuteAndStoreLoops(builder, loc, plan.gridTy, arrayOutputBuffers,
+                           plan.numArrayRows, plan.numArrayCols);
+  return success();
+}
+
+
+// Exposes the CLI name used to invoke this pass from pass pipelines
+// and tooling.
 
 llvm::StringRef ExecuteArrayPass::getArgument() const {
   return "analog-execute-array";
 }
 
+
+// Summarizes the pass behavior for MLIR pass listings and debugging
+// output.
+
 llvm::StringRef ExecuteArrayPass::getDescription() const {
   return "Insert ExecuteArray ops";
 }
 
+
+// Rewrites tagged matmuls into analog array execution loops and
+// allocates the buffers needed to capture per-array outputs.
+
 void ExecuteArrayPass::runOnOperation() {
   auto func = getOperation();
+  auto gridByMatrixSourceId = collectMatrixGridsBySourceId(func);
+  bool hadError = false;
 
-  std::deque<analog::MatrixGridType> gridQueue;
-
-  // Find array partition
-  func.walk([&](analog::MatrixPartitionOp op) {
-    auto grid = op.getResult();
-    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(grid.getType());
-    if (!gridTy) {
+  int64_t nextMatmulExecId = 0;
+  func.walk([&](mlir::linalg::MatmulOp op) {
+    if (hadError) {
       return;
     }
 
-    gridQueue.push_back(gridTy);
-  });
-
-
-  int64_t alloc_id = 0;
-  // Find matmul ops
-  func.walk([&](mlir::linalg::MatmulOp op) {
+    FailureOr<std::optional<MatmulExecutionPlan>> maybePlan =
+        buildMatmulExecutionPlan(op, gridByMatrixSourceId);
+    if (failed(maybePlan)) {
+      hadError = true;
+      return;
+    }
+    if (!*maybePlan) {
+      return;
+    }
 
     OpBuilder builder(op);
     builder.setInsertionPoint(op);
-    auto loc = op.getLoc();
-
-    auto gridTy = gridQueue.front();
-    gridQueue.pop_front();
-
-    auto arrayShape = gridTy.getArrayShape();
-    int64_t arrayRows = arrayShape[0];
-
-    auto gridShape = gridTy.getGridShape();
-    int64_t numArrayRows = gridShape[0]; 
-    int64_t numArrayCols = gridShape[1]; 
-
-    auto f32Ty = builder.getF32Type();
-
-    // memref<array_row x array_col x lanes x f32>
-    auto arrayOutputBuffersTy = mlir::MemRefType::get({numArrayRows, numArrayCols, arrayRows}, f32Ty);
-    Value arrayOutputBuffers = builder.create<memref::AllocOp>(loc, arrayOutputBuffersTy);
-
-    auto arrayOutputBuffersOp = arrayOutputBuffers.getDefiningOp<memref::AllocOp>();
-    arrayOutputBuffersOp->setAttr(
-      "analog-alloc-id",
-      builder.getI64IntegerAttr(alloc_id)
-    );
-    alloc_id++;
-
-    Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-    Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
-
-    Value ubArrayRows = builder.create<arith::ConstantIndexOp>(loc, numArrayRows);
-    Value ubArrayCols = builder.create<arith::ConstantIndexOp>(loc, numArrayCols);
-
-    // for array-row
-    builder.create<scf::ForOp>(
-      loc, zero, ubArrayRows, one, ValueRange{},
-      [&](OpBuilder &b1, Location loc, Value tr, ValueRange) {
-
-        // for array-col
-        b1.create<scf::ForOp>(
-          loc, zero, ubArrayCols, one, ValueRange{},
-          [&](OpBuilder &b2, Location loc, Value tc, ValueRange) {
-
-            // Execute array
-            Value array = b2.create<analog::ArrayExecuteOp>(loc, gridTy, ValueRange{tr, tc});
-
-            // Store 1x(arrayRows) lanes into [tr, tc, :]
-            b2.create<analog::ArrayStoreOp>(
-              loc,
-              array,
-              arrayOutputBuffers,
-              ValueRange{tr, tc}
-            );
-
-            b2.create<scf::YieldOp>(loc);
-          });
-
-        b1.create<scf::YieldOp>(loc);
-      });
+    if (failed(rewriteTaggedMatmul(builder, op, **maybePlan,
+                                   nextMatmulExecId))) {
+      hadError = true;
+      return;
+    }
+    ++nextMatmulExecId;
   });
+
+  if (hadError) {
+    signalPassFailure();
+  }
 }
+
+
+// Declares the analog dialect required for the execute and store ops
+// inserted by this pass.
 
 void ExecuteArrayPass::getDependentDialects(DialectRegistry &registry) const {
   registry.insert<analog::AnalogDialect>();
 }
+
+
+// Builds a new instance of the pass for registration and pipeline
+// construction.
 
 std::unique_ptr<mlir::Pass> createExecuteArrayPass() {
   return std::make_unique<ExecuteArrayPass>();

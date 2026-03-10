@@ -35,8 +35,24 @@ struct LayerTask {
 };
 
 static std::vector<pthread_t> layerThreads;
-static Tensor2DF32 layerResult{};
-static bool layerResultReady = false;
+
+static void printTensorResult(const Tensor2DF32 &tensor) {
+  std::printf("[dispatch shim] layer result (%lld x %lld)\n",
+              static_cast<long long>(tensor.sizes[0]),
+              static_cast<long long>(tensor.sizes[1]));
+
+  for (int64_t row = 0; row < tensor.sizes[0]; ++row) {
+    std::printf("  [");
+    for (int64_t col = 0; col < tensor.sizes[1]; ++col) {
+      int64_t index = tensor.offset + row * tensor.strides[0] +
+                      col * tensor.strides[1];
+      std::printf("%s%.6f",
+                  col == 0 ? "" : ", ",
+                  tensor.aligned[index]);
+    }
+    std::printf("]\n");
+  }
+}
 
 
 /*
@@ -72,8 +88,9 @@ static void *layerThread(void *context) {
         task->input.strides[1], task->layerId);
     setCurrentWorkerSlot(-1);
 
-    layerResult = result;
-    layerResultReady = true;
+    Tensor2DF32 *heapResult = new Tensor2DF32(result);
+    delete task;
+    return heapResult;
   } else {
     std::printf("[dispatch shim] worker[%d] waiting for layer %d\n",
                 task->workerSlot,
@@ -126,8 +143,6 @@ extern "C" void analog_dispatch_layer(float *allocated, float *aligned,
     std::abort();
   }
 
-  layerResultReady = false;
-
   layerThreads.reserve(static_cast<size_t>(NUM_LAYERS));
   for (int32_t workerSlot = 0; workerSlot < static_cast<int32_t>(NUM_LAYERS);
        ++workerSlot) {
@@ -165,22 +180,30 @@ extern "C" void analog_dispatch_layer(float *allocated, float *aligned,
   point for analog layer execution.
 */
 extern "C" Tensor2DF32 analog_wait_layers() {
+  Tensor2DF32 *joinedResult = nullptr;
+
   for (pthread_t thread : layerThreads) {
-    int rc = pthread_join(thread, nullptr);
+    void *threadResult = nullptr;
+    int rc = pthread_join(thread, &threadResult);
     if (rc != 0) {
       std::fprintf(stderr, "pthread_join failed (rc=%d)\n", rc);
       std::abort();
     }
+
+    if (threadResult != nullptr) {
+      joinedResult = static_cast<Tensor2DF32 *>(threadResult);
+    }
   }
   layerThreads.clear();
 
-  bool ready = layerResultReady;
-  Tensor2DF32 result = layerResult;
-
-  if (!ready) {
+  if (joinedResult == nullptr) {
     std::fprintf(stderr, "analog_wait_layers completed with no layer result\n");
     std::abort();
   }
 
+  Tensor2DF32 result = *joinedResult;
+  delete joinedResult;
+
+  printTensorResult(result);
   return result;
 }
