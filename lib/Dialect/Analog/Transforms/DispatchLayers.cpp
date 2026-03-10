@@ -265,7 +265,8 @@ static std::pair<func::FuncOp, Block *> createLayerDispatcherSkeleton(
   fn.setPublic();
 
   Region &bodyRegion = fn.getBody();
-  b.createBlock(&bodyRegion);
+  b.createBlock(&bodyRegion, bodyRegion.end(), TypeRange{dynInputTy, i32Ty},
+                SmallVector<Location>{fn.getLoc(), fn.getLoc()});
   Block *exitBlock = b.createBlock(&bodyRegion);
   exitBlock->addArgument(dynResultTy, fn.getLoc());
   return {fn, exitBlock};
