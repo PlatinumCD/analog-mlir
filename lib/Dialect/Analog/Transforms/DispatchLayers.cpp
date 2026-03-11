@@ -18,9 +18,11 @@ namespace analog {
 namespace {
 
 constexpr StringLiteral kForwardFnName = "forward";
-constexpr StringLiteral kDispatchLayerFnName = "analog_dispatch_layer";
+constexpr StringLiteral kDispatchLayer2DFnName = "analog_dispatch_layer_2d";
+constexpr StringLiteral kDispatchLayer4DFnName = "analog_dispatch_layer_4d";
 constexpr StringLiteral kRunLayerFnName = "analog_run_layer";
-constexpr StringLiteral kWaitLayersFnName = "analog_wait_layers";
+constexpr StringLiteral kWaitLayers2DFnName = "analog_wait_layers_2d";
+constexpr StringLiteral kWaitLayers4DFnName = "analog_wait_layers_4d";
 constexpr StringLiteral kInvokeLayerPrefix = "analog_invoke_layer_";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
 constexpr StringLiteral kShimRequiredAttr = "analog-shim-required";
@@ -36,6 +38,11 @@ struct LayerCallInfo {
 struct DispatcherAbi {
   RankedTensorType dynInputTy;
   RankedTensorType dynResultTy;
+};
+
+struct LayerRuntimeHooks {
+  func::FuncOp dispatchDecl;
+  func::FuncOp waitDecl;
 };
 
 
@@ -94,9 +101,11 @@ static RankedTensorType makeDynamicLike(RankedTensorType ty) {
 // they are ignored during collection.
 
 static bool isRuntimeDispatchCallee(StringRef calleeName) {
-  return calleeName == kDispatchLayerFnName ||
+  return calleeName == kDispatchLayer2DFnName ||
+         calleeName == kDispatchLayer4DFnName ||
          calleeName == kRunLayerFnName ||
-         calleeName == kWaitLayersFnName;
+         calleeName == kWaitLayers2DFnName ||
+         calleeName == kWaitLayers4DFnName;
 }
 
 
@@ -192,25 +201,47 @@ computeUnifiedDispatcherTypes(SmallVectorImpl<LayerCallInfo> &layers) {
 }
 
 
-// Ensures the external runtime hook declarations exist and tags them
-// as required shims for downstream lowering.
+// Returns the rank-specific dispatch and wait hook names for the shared
+// runtime ABI and rejects unsupported tensor ranks.
+static FailureOr<std::pair<StringRef, StringRef>>
+getRuntimeHookNamesForRank(unsigned rank) {
+  switch (rank) {
+  case 2:
+    return std::make_pair(StringRef(kDispatchLayer2DFnName),
+                          StringRef(kWaitLayers2DFnName));
+  case 4:
+    return std::make_pair(StringRef(kDispatchLayer4DFnName),
+                          StringRef(kWaitLayers4DFnName));
+  default:
+    return failure();
+  }
+}
 
-static std::pair<func::FuncOp, func::FuncOp>
+
+// Ensures the rank-specific external runtime hook declarations exist and tags
+// them as required shims for downstream lowering.
+static FailureOr<LayerRuntimeHooks>
 getOrCreateRuntimeHooks(ModuleOp module, RankedTensorType dynInputTy,
                         RankedTensorType dynResultTy) {
   OpBuilder moduleBuilder(module.getBodyRegion());
   auto i32Ty = moduleBuilder.getI32Type();
+  FailureOr<std::pair<StringRef, StringRef>> maybeNames =
+      getRuntimeHookNamesForRank(dynInputTy.getRank());
+  if (failed(maybeNames))
+    return failure();
+
+  auto [dispatchName, waitName] = *maybeNames;
   auto dispatchTy =
       moduleBuilder.getFunctionType(TypeRange{dynInputTy, i32Ty}, TypeRange{});
   auto waitTy = moduleBuilder.getFunctionType(TypeRange{}, TypeRange{dynResultTy});
 
   func::FuncOp dispatchDecl =
-      getOrCreateExternDecl(module, kDispatchLayerFnName, dispatchTy);
+      getOrCreateExternDecl(module, dispatchName, dispatchTy);
   func::FuncOp waitDecl =
-      getOrCreateExternDecl(module, kWaitLayersFnName, waitTy);
+      getOrCreateExternDecl(module, waitName, waitTy);
   dispatchDecl->setAttr(kShimRequiredAttr, moduleBuilder.getUnitAttr());
   waitDecl->setAttr(kShimRequiredAttr, moduleBuilder.getUnitAttr());
-  return {dispatchDecl, waitDecl};
+  return LayerRuntimeHooks{dispatchDecl, waitDecl};
 }
 
 
@@ -218,8 +249,7 @@ getOrCreateRuntimeHooks(ModuleOp module, RankedTensorType dynInputTy,
 // using the unified dynamic tensor ABI.
 
 static void rewriteLayerCallSites(MutableArrayRef<LayerCallInfo> layers,
-                                  func::FuncOp dispatchDecl,
-                                  func::FuncOp waitDecl,
+                                  LayerRuntimeHooks hooks,
                                   RankedTensorType dynInputTy,
                                   RankedTensorType dynResultTy) {
   for (LayerCallInfo &info : layers) {
@@ -232,11 +262,11 @@ static void rewriteLayerCallSites(MutableArrayRef<LayerCallInfo> layers,
     Value idConst = b.create<arith::ConstantIntOp>(loc, info.layerId, 32);
     Value dynInput =
         b.create<tensor::CastOp>(loc, dynInputTy, info.call.getOperand(0));
-    auto dispatch = b.create<func::CallOp>(loc, dispatchDecl.getSymName(),
+    auto dispatch = b.create<func::CallOp>(loc, hooks.dispatchDecl.getSymName(),
                                            TypeRange{},
                                            ValueRange{dynInput, idConst});
     dispatch->setAttr(kLayerIdAttr, b.getI64IntegerAttr(info.layerId));
-    auto wait = b.create<func::CallOp>(loc, waitDecl.getSymName(),
+    auto wait = b.create<func::CallOp>(loc, hooks.waitDecl.getSymName(),
                                        TypeRange{dynResultTy}, ValueRange{});
     wait->setAttr(kLayerIdAttr, b.getI64IntegerAttr(info.layerId));
     Value typedResult =
@@ -428,10 +458,15 @@ void DispatchLayersPass::runOnOperation() {
   DispatcherAbi abi = *maybeTypes;
 
   eraseSymbolsWithPrefix(module, kInvokeLayerPrefix);
-  auto [dispatchDecl, waitDecl] =
+  FailureOr<LayerRuntimeHooks> maybeHooks =
       getOrCreateRuntimeHooks(module, abi.dynInputTy, abi.dynResultTy);
+  if (failed(maybeHooks)) {
+    forward.emitError("unsupported tensor rank for layer dispatch hooks");
+    signalPassFailure();
+    return;
+  }
   createLayerDispatcher(module, layers, abi.dynInputTy, abi.dynResultTy);
-  rewriteLayerCallSites(layers, dispatchDecl, waitDecl, abi.dynInputTy,
+  rewriteLayerCallSites(layers, *maybeHooks, abi.dynInputTy,
                         abi.dynResultTy);
 }
 

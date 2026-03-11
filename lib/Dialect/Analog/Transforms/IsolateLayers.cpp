@@ -23,13 +23,17 @@ namespace {
 
 using OpChain = SmallVector<Operation *>;
 using OpChainList = SmallVector<OpChain>;
+using TaggedOpChain = std::pair<OpChain, StringRef>;
+using TaggedOpChainList = SmallVector<TaggedOpChain>;
 
 constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initialization";
-constexpr StringLiteral kLayerRoutineAttr = "analog-layer-routine";
+constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
+constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
 constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
-constexpr StringLiteral kLayerRoutinePrefix = "analog_layer_routine_";
+constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
+constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
 constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
 
 
@@ -181,7 +185,7 @@ static void collectMatrixInitializationChains(func::FuncOp func,
 // vector materialization through tensor re-materialization.
 
 static void collectLayerRoutineChains(func::FuncOp func,
-                                      OpChainList &layerRoutineChains) {
+                                      TaggedOpChainList &layerRoutineChains) {
   DenseSet<Operation *> seenTopLevelOwners;
 
   func.walk([&](Operation *op) {
@@ -194,7 +198,8 @@ static void collectLayerRoutineChains(func::FuncOp func,
 
     OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
     if (!segment.empty())
-      layerRoutineChains.push_back(std::move(segment));
+      layerRoutineChains.push_back(
+          {std::move(segment), StringRef(kConv2DRoutineAttr)});
   });
 
   func.walk([&](analog::VectorFromTensorOp op) {
@@ -227,7 +232,8 @@ static void collectLayerRoutineChains(func::FuncOp func,
         break;
     }
     if (!chain.empty() && chain.back() == endTop)
-      layerRoutineChains.push_back(std::move(chain));
+      layerRoutineChains.push_back(
+          {std::move(chain), StringRef(kLinearRoutineAttr)});
   });
 }
 
@@ -571,9 +577,10 @@ static void wrapMatrixInitializationChains(func::FuncOp func, OpChainList &matri
 // Wraps layer-routine segments in execute regions and returns any
 // values that escape those segments.
 
-static void wrapLayerRoutineChains(func::FuncOp func, OpChainList &layerRoutineChains) {
+static void wrapLayerRoutineChains(func::FuncOp func,
+                                   TaggedOpChainList &layerRoutineChains) {
   int64_t layerRoutineCount = 0;
-  for (auto &segment : layerRoutineChains) {
+  for (auto &[segment, tag] : layerRoutineChains) {
     if (segment.empty())
       continue;
     Operation *first = segment.front();
@@ -590,7 +597,7 @@ static void wrapLayerRoutineChains(func::FuncOp func, OpChainList &layerRoutineC
 
     OpBuilder b(first);
     auto exec = b.create<scf::ExecuteRegionOp>(first->getLoc(), resultTypes);
-    exec->setAttr(kLayerRoutineAttr,
+    exec->setAttr(tag,
                   IntegerAttr::get(IndexType::get(func.getContext()),
                                    layerRoutineCount++));
 
@@ -686,8 +693,10 @@ static void convertMatrixRegionsToFunctionBodies(func::FuncOp forward) {
 // function that preserves the original tensor input contract.
 
 static void convertLayerRegionToFunctionBody(func::FuncOp forward,
-                                             scf::ExecuteRegionOp exec) {
-  std::optional<int64_t> maybeId = getTaggedRegionId(exec, kLayerRoutineAttr);
+                                             scf::ExecuteRegionOp exec,
+                                             StringRef tag,
+                                             StringRef prefix) {
+  std::optional<int64_t> maybeId = getTaggedRegionId(exec, tag);
   if (!maybeId)
     return;
   if (exec.getRegion().empty() || exec.getRegion().getBlocks().size() < 2)
@@ -698,7 +707,7 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
     return;
 
   int64_t id = *maybeId;
-  std::string fnName = buildOutlinedFunctionName(kLayerRoutinePrefix, id);
+  std::string fnName = buildOutlinedFunctionName(prefix, id);
   SmallVector<Value> externalInputs;
   collectExternalValuesForRegion(exec, externalInputs);
 
@@ -747,12 +756,19 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
 // into helper function calls.
 
 static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
-  SmallVector<scf::ExecuteRegionOp> execs =
-      collectTaggedExecuteRegions(forward, kLayerRoutineAttr);
+  for (auto [tag, prefix] : {
+           std::pair<StringRef, StringRef>{kLinearRoutineAttr,
+                                           kLinearRoutinePrefix},
+           std::pair<StringRef, StringRef>{kConv2DRoutineAttr,
+                                           kConv2DRoutinePrefix},
+       }) {
+    SmallVector<scf::ExecuteRegionOp> execs =
+        collectTaggedExecuteRegions(forward, tag);
 
-  for (scf::ExecuteRegionOp exec : execs) {
-    if (exec && exec->getBlock())
-      convertLayerRegionToFunctionBody(forward, exec);
+    for (scf::ExecuteRegionOp exec : execs) {
+      if (exec && exec->getBlock())
+        convertLayerRegionToFunctionBody(forward, exec, tag, prefix);
+    }
   }
 }
 
@@ -793,7 +809,7 @@ void IsolateLayersPass::getDependentDialects(DialectRegistry &registry) const {
 void IsolateLayersPass::runOnOperation() {
   func::FuncOp func = getOperation();
   OpChainList matrixChains;
-  OpChainList layerRoutineChains;
+  TaggedOpChainList layerRoutineChains;
 
   collectMatrixInitializationChains(func, matrixChains);
   collectLayerRoutineChains(func, layerRoutineChains);
