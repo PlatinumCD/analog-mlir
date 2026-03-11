@@ -29,6 +29,7 @@ constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
 constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
 constexpr StringLiteral kLayerRoutinePrefix = "analog_layer_routine_";
+constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
 
 
 // Walks up the parent chain until it finds the top-level operation
@@ -122,9 +123,26 @@ static void collectMatrixInitializationChains(func::FuncOp func,
 
 static void collectLayerRoutineChains(func::FuncOp func,
                                       OpChainList &layerRoutineChains) {
+  DenseSet<Operation *> seenTopLevelOwners;
+
+  func.walk([&](Operation *op) {
+    if (!op->hasAttr(kRewrittenConv2DOutputAttr))
+      return;
+
+    Operation *topLevelOwner = findTopLevelOwner(op);
+    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+      return;
+
+    layerRoutineChains.push_back(OpChain{topLevelOwner});
+  });
+
   func.walk([&](analog::VectorFromTensorOp op) {
     Operation *startTop = findTopLevelOwner(op.getOperation());
     if (!startTop || !startTop->getBlock())
+      return;
+    if (startTop->hasAttr(kRewrittenConv2DOutputAttr))
+      return;
+    if (!seenTopLevelOwners.insert(startTop).second)
       return;
 
     // A layer routine starts at the vector materialization boundary and runs
@@ -150,6 +168,19 @@ static void collectLayerRoutineChains(func::FuncOp func,
     if (!chain.empty() && chain.back() == endTop)
       layerRoutineChains.push_back(std::move(chain));
   });
+}
+
+
+// Returns whether the candidate region is the target region or is nested
+// beneath it through parent operations.
+static bool isRegionInsideRegion(Region *candidate, Region &target) {
+  for (Region *region = candidate; region; ) {
+    if (region == &target)
+      return true;
+    Operation *parent = region->getParentOp();
+    region = parent ? parent->getParentRegion() : nullptr;
+  }
+  return false;
 }
 
 
@@ -245,6 +276,40 @@ static bool isOpInsideRegion(Operation *op, Region &region) {
     r = parent ? parent->getParentRegion() : nullptr;
   }
   return false;
+}
+
+
+// Returns whether the value is defined by an operation or block argument
+// whose owner already lives inside the target region.
+static bool isValueDefinedInsideRegion(Value value, Region &region) {
+  if (!value)
+    return false;
+
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    Block *owner = blockArg.getOwner();
+    return owner && isRegionInsideRegion(owner->getParent(), region);
+  }
+
+  return isOpInsideRegion(value.getDefiningOp(), region);
+}
+
+
+// Collects region operands that are defined outside the execute region so
+// outlined layer helpers can take them as explicit function arguments.
+static void collectExternalValuesForRegion(
+    scf::ExecuteRegionOp exec, SmallVectorImpl<Value> &externalValues) {
+  DenseSet<Value> seen;
+  Region &region = exec.getRegion();
+
+  region.walk([&](Operation *op) {
+    for (Value operand : op->getOperands()) {
+      if (isValueDefinedInsideRegion(operand, region))
+        continue;
+      if (!seen.insert(operand).second)
+        continue;
+      externalValues.push_back(operand);
+    }
+  });
 }
 
 
@@ -349,20 +414,6 @@ static void cloneOutlinedOpsIntoBuilder(Block &source, OpBuilder &builder,
     for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
       mapper.map(oldRes, newRes);
   }
-}
-
-
-// Finds the first vector materialization in the execute region so the
-// outlined layer keeps the original tensor input contract.
-
-static analog::VectorFromTensorOp
-findFirstVectorFromTensor(scf::ExecuteRegionOp exec) {
-  analog::VectorFromTensorOp firstVectorFromTensor;
-  exec.getRegion().walk([&](analog::VectorFromTensorOp op) {
-    if (!firstVectorFromTensor)
-      firstVectorFromTensor = op;
-  });
-  return firstVectorFromTensor;
 }
 
 
@@ -581,27 +632,24 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
   if (exec.getRegion().empty() || exec.getRegion().getBlocks().size() < 2)
     return;
 
-  // The outlined layer entrypoint keeps the original tensor input contract:
-  // whatever fed the first analog.vector.from_tensor becomes the function arg.
-  analog::VectorFromTensorOp firstVectorFromTensor =
-      findFirstVectorFromTensor(exec);
-  if (!firstVectorFromTensor)
-    return;
-  Value layerInput = firstVectorFromTensor.getOperand();
-
   ModuleOp module = getOutliningModule(forward);
   if (!module)
     return;
 
   int64_t id = *maybeId;
   std::string fnName = buildOutlinedFunctionName(kLayerRoutinePrefix, id);
+  SmallVector<Value> externalInputs;
+  collectExternalValuesForRegion(exec, externalInputs);
 
   func::FuncOp outlined = module.lookupSymbol<func::FuncOp>(fnName);
   if (!outlined) {
     OpBuilder moduleBuilder(module.getBodyRegion());
     moduleBuilder.setInsertionPointToEnd(&module.getBodyRegion().front());
 
-    SmallVector<Type> argTypes{layerInput.getType()};
+    SmallVector<Type> argTypes;
+    argTypes.reserve(externalInputs.size());
+    for (Value input : externalInputs)
+      argTypes.push_back(input.getType());
     SmallVector<Type> resTypes(exec.getResultTypes().begin(), exec.getResultTypes().end());
     auto fnType = moduleBuilder.getFunctionType(argTypes, resTypes);
     outlined = moduleBuilder.create<func::FuncOp>(exec.getLoc(), fnName, fnType);
@@ -610,7 +658,8 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
     Block *entry = outlined.addEntryBlock();
     OpBuilder b = OpBuilder::atBlockEnd(entry);
     IRMapping mapper;
-    mapper.map(layerInput, entry->getArgument(0));
+    for (auto [input, arg] : llvm::zip(externalInputs, entry->getArguments()))
+      mapper.map(input, arg);
 
     Block &bodyBlk = exec.getRegion().front();
     Block &exitBlk = exec.getRegion().back();
@@ -626,7 +675,7 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
 
   OpBuilder b(exec);
   auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(),
-                                     exec.getResultTypes(), ValueRange{layerInput});
+                                     exec.getResultTypes(), externalInputs);
   call->setAttr(kLayerIdAttr, b.getI64IntegerAttr(id));
   exec.replaceAllUsesWith(call.getResults());
   exec.erase();

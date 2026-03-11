@@ -10,19 +10,6 @@
 namespace mlir {
 namespace analog {
 
-struct LowerToGolemPipelineOptions
-    : public PassPipelineOptions<LowerToGolemPipelineOptions> {};
-
-void registerLowerToGolemPipeline() {
-  PassPipelineRegistration<LowerToGolemPipelineOptions>(
-      "analog-lower-to-golem",
-      "Lower analog IR to the golem backend and finalize hardware intrinsics",
-      [](OpPassManager &pm, const LowerToGolemPipelineOptions &) {
-        pm.addPass(createConvertAnalogToGolemBackendPass());
-        pm.addPass(createFinalizeGolemIntrinsicsPass());
-      });
-}
-
 struct LowerToDebugShimsPipelineOptions
     : public PassPipelineOptions<LowerToDebugShimsPipelineOptions> {};
 
@@ -40,7 +27,6 @@ void registerAnalogConversionPasses() {
   PassRegistration<ConvertAnalogToGolemBackendPass>();
   PassRegistration<ConvertAnalogToDebugShimsPass>();
   PassRegistration<FinalizeGolemIntrinsicsPass>();
-  registerLowerToGolemPipeline();
   registerLowerToDebugShimsPipeline();
 }
 
