@@ -527,11 +527,9 @@ static Value buildChannelMatmul(OpBuilder &builder, MatchedConv2D &match,
     matmulOp->setAttr(kMatrixSourceIdAttr, matrixSourceId);
   }
 
-  Value addInitEmpty = builder.create<tensor::EmptyOp>(
-      state.loc, state.matmulResultTy.getShape(), state.elementType);
   auto addOp = builder.create<linalg::AddOp>(
       state.loc, ValueRange{partial, matmulOp.getResult(0)},
-      ValueRange{addInitEmpty});
+      ValueRange{partial});
   return addOp.getResultTensors().front();
 }
 
