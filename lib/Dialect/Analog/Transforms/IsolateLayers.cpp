@@ -64,7 +64,7 @@ static bool allUsesStayWithinTopLevelOwners(
 
 
 // Grows a top-level segment backward to absorb local setup ops that feed the
-// anchor and are only used within the same segment.
+// anchor, including values used by nested ops inside the segment.
 static OpChain buildClosedTopLevelSegment(Operation *anchor) {
   if (!anchor)
     return {};
@@ -76,24 +76,26 @@ static OpChain buildClosedTopLevelSegment(Operation *anchor) {
 
   while (!worklist.empty()) {
     Operation *current = worklist.pop_back_val();
-    for (Value operand : current->getOperands()) {
-      Operation *producer = operand.getDefiningOp();
-      if (!producer || isa<arith::ConstantOp>(producer))
-        continue;
+    current->walk([&](Operation *nested) {
+      for (Value operand : nested->getOperands()) {
+        Operation *producer = operand.getDefiningOp();
+        if (!producer || isa<arith::ConstantOp>(producer))
+          continue;
 
-      Operation *producerTop = findTopLevelOwner(producer);
-      if (!producerTop || producerTop == current ||
-          producerTop->getBlock() != anchor->getBlock() ||
-          segmentOwners.contains(producerTop)) {
-        continue;
+        Operation *producerTop = findTopLevelOwner(producer);
+        if (!producerTop || producerTop == current ||
+            producerTop->getBlock() != anchor->getBlock() ||
+            segmentOwners.contains(producerTop)) {
+          continue;
+        }
+
+        if (!allUsesStayWithinTopLevelOwners(producerTop, segmentOwners))
+          continue;
+
+        segmentOwners.insert(producerTop);
+        worklist.push_back(producerTop);
       }
-
-      if (!allUsesStayWithinTopLevelOwners(producerTop, segmentOwners))
-        continue;
-
-      segmentOwners.insert(producerTop);
-      worklist.push_back(producerTop);
-    }
+    });
   }
 
   OpChain segment;
@@ -392,6 +394,22 @@ static bool allUsesInsideRegion(arith::ConstantOp cst, Region &region) {
 }
 
 
+// Checks whether all uses of the operation stay within the target
+// region boundary.
+static bool allUsesInsideRegion(Operation *op, Region &region) {
+  if (!op)
+    return false;
+
+  for (Value result : op->getResults()) {
+    for (Operation *user : result.getUsers()) {
+      if (!isOpInsideRegion(user, region))
+        return false;
+    }
+  }
+  return true;
+}
+
+
 // Rewrites only the uses of a value that occur within the target
 // region.
 
@@ -536,6 +554,42 @@ static void pullExternalConstantsIntoExecuteRegions(func::FuncOp func) {
       auto cloned = cast<arith::ConstantOp>(b.clone(*cst.getOperation()));
       replaceUsesInsideRegion(cst.getResult(), cloned.getResult(), exec.getRegion());
     }
+  }
+}
+
+
+// Moves top-level setup ops into execute regions when they are only used by
+// the region, so outlined helpers do not gain avoidable call operands.
+static void pullExternalProducersIntoExecuteRegions(func::FuncOp func) {
+  SmallVector<scf::ExecuteRegionOp> execs;
+  func.walk([&](scf::ExecuteRegionOp exec) { execs.push_back(exec); });
+
+  for (scf::ExecuteRegionOp exec : execs) {
+    if (exec.getRegion().empty())
+      continue;
+
+    Block &entry = exec.getRegion().front();
+    bool changed = false;
+    do {
+      changed = false;
+
+      SmallVector<Value> externalValues;
+      collectExternalValuesForRegion(exec, externalValues);
+      for (Value value : externalValues) {
+        Operation *producer = value.getDefiningOp();
+        if (!producer || isa<arith::ConstantOp>(producer))
+          continue;
+        if (!producer->getBlock() || producer->getBlock() != exec->getBlock())
+          continue;
+        if (findTopLevelOwner(producer) != producer)
+          continue;
+        if (!allUsesInsideRegion(producer, exec.getRegion()))
+          continue;
+
+        producer->moveBefore(&entry, entry.begin());
+        changed = true;
+      }
+    } while (changed);
   }
 }
 
@@ -816,6 +870,7 @@ void IsolateLayersPass::runOnOperation() {
 
   wrapMatrixInitializationChains(func, matrixChains);
   wrapLayerRoutineChains(func, layerRoutineChains);
+  pullExternalProducersIntoExecuteRegions(func);
   pullExternalConstantsIntoExecuteRegions(func);
   convertMatrixRegionsToFunctionBodies(func);
   convertLayerRegionsToFunctionBodies(func);
