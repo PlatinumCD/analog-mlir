@@ -5,7 +5,9 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
@@ -31,6 +33,9 @@ constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
 constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
+constexpr StringLiteral kOutputChannelAssemblyAttr = "analog.output_channel_assembly";
+constexpr StringLiteral kSlidingWindowPatchAttr = "analog.sliding_window_patch";
+constexpr StringLiteral kSlidingWindowBiasAddAttr = "analog.sliding_window_bias_add";
 constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
 constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
 constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
@@ -63,6 +68,38 @@ static bool allUsesStayWithinTopLevelOwners(
 }
 
 
+// Returns whether the top-level op is local setup that should move with a
+// rewritten conv rather than become a separate layer dependency.
+static bool isAbsorbableTopLevelSetupOp(Operation *op) {
+  return isa<tensor::EmptyOp, tensor::ExpandShapeOp, linalg::FillOp,
+             linalg::BroadcastOp>(op);
+}
+
+
+// Returns whether the op is a top-level conv assembly loop that builds a
+// rank-4 tensor result, including the degenerate 1x1 spatial case.
+static bool isTopLevelConvAssembly(Operation *op) {
+  if (!op || !op->hasAttr(kOutputChannelAssemblyAttr))
+    return false;
+
+  auto forOp = dyn_cast<scf::ForOp>(op);
+  if (!forOp || forOp.getNumResults() != 1)
+    return false;
+
+  auto resultTy = dyn_cast<RankedTensorType>(forOp.getResult(0).getType());
+  return resultTy && resultTy.getRank() == 4;
+}
+
+
+// Returns whether the top-level op is part of a rewritten conv boundary,
+// including degenerate 1x1 convs that are split across several top-level ops.
+static bool isConvBoundaryTopLevelOp(Operation *op) {
+  return isAbsorbableTopLevelSetupOp(op) || isTopLevelConvAssembly(op) ||
+         op->hasAttr(kSlidingWindowPatchAttr) ||
+         op->hasAttr(kSlidingWindowBiasAddAttr);
+}
+
+
 // Grows a top-level segment backward to absorb local setup ops that feed the
 // anchor, including values used by nested ops inside the segment.
 static OpChain buildClosedTopLevelSegment(Operation *anchor) {
@@ -88,6 +125,8 @@ static OpChain buildClosedTopLevelSegment(Operation *anchor) {
             segmentOwners.contains(producerTop)) {
           continue;
         }
+        if (!isConvBoundaryTopLevelOp(producerTop))
+          continue;
 
         if (!allUsesStayWithinTopLevelOwners(producerTop, segmentOwners))
           continue;
@@ -199,9 +238,29 @@ static void collectLayerRoutineChains(func::FuncOp func,
       return;
 
     OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
-    if (!segment.empty())
+    if (!segment.empty()) {
+      for (Operation *segmentOp : segment)
+        seenTopLevelOwners.insert(segmentOp);
       layerRoutineChains.push_back(
           {std::move(segment), StringRef(kConv2DRoutineAttr)});
+    }
+  });
+
+  func.walk([&](Operation *op) {
+    if (!isTopLevelConvAssembly(op))
+      return;
+
+    Operation *topLevelOwner = findTopLevelOwner(op);
+    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+      return;
+
+    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    if (!segment.empty()) {
+      for (Operation *segmentOp : segment)
+        seenTopLevelOwners.insert(segmentOp);
+      layerRoutineChains.push_back(
+          {std::move(segment), StringRef(kConv2DRoutineAttr)});
+    }
   });
 
   func.walk([&](analog::VectorFromTensorOp op) {
@@ -487,6 +546,19 @@ static std::string buildOutlinedFunctionName(StringRef prefix, int64_t id) {
 }
 
 
+// Returns whether the function is an outlined helper that should not be
+// processed again by the isolation pass.
+static bool isOutlinedHelperFunction(func::FuncOp func) {
+  if (!func)
+    return false;
+
+  StringRef name = func.getSymName();
+  return name.starts_with(kMatrixInitializationPrefix) ||
+         name.starts_with(kLinearRoutinePrefix) ||
+         name.starts_with(kConv2DRoutinePrefix);
+}
+
+
 // Clones non-terminator operations from the source block into the
 // builder while keeping the IR mapping current.
 
@@ -583,10 +655,21 @@ static void pullExternalProducersIntoExecuteRegions(func::FuncOp func) {
           continue;
         if (findTopLevelOwner(producer) != producer)
           continue;
-        if (!allUsesInsideRegion(producer, exec.getRegion()))
+        if (!isAbsorbableTopLevelSetupOp(producer))
           continue;
+        if (allUsesInsideRegion(producer, exec.getRegion())) {
+          producer->moveBefore(&entry, entry.begin());
+          changed = true;
+          continue;
+        }
 
-        producer->moveBefore(&entry, entry.begin());
+        OpBuilder b(exec.getContext());
+        b.setInsertionPointToStart(&entry);
+        Operation *cloned = b.clone(*producer);
+        for (auto [oldResult, newResult] :
+             llvm::zip(producer->getResults(), cloned->getResults())) {
+          replaceUsesInsideRegion(oldResult, newResult, exec.getRegion());
+        }
         changed = true;
       }
     } while (changed);
@@ -801,7 +884,11 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
   auto call = b.create<func::CallOp>(exec.getLoc(), outlined.getSymName(),
                                      exec.getResultTypes(), externalInputs);
   call->setAttr(kLayerIdAttr, b.getI64IntegerAttr(id));
-  exec.replaceAllUsesWith(call.getResults());
+  for (auto [oldResult, newResult] : llvm::zip(exec.getResults(), call.getResults())) {
+    oldResult.replaceUsesWithIf(newResult, [&](OpOperand &use) {
+      return use.getOwner() != call.getOperation();
+    });
+  }
   exec.erase();
 }
 
@@ -862,6 +949,9 @@ void IsolateLayersPass::getDependentDialects(DialectRegistry &registry) const {
 
 void IsolateLayersPass::runOnOperation() {
   func::FuncOp func = getOperation();
+  if (isOutlinedHelperFunction(func))
+    return;
+
   OpChainList matrixChains;
   TaggedOpChainList layerRoutineChains;
 

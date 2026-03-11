@@ -20,7 +20,8 @@ namespace {
 constexpr StringLiteral kForwardFnName = "forward";
 constexpr StringLiteral kDispatchLayer2DFnName = "analog_dispatch_layer_2d";
 constexpr StringLiteral kDispatchLayer4DFnName = "analog_dispatch_layer_4d";
-constexpr StringLiteral kRunLayerFnName = "analog_run_layer";
+constexpr StringLiteral kRunLayer2DFnName = "analog_run_layer_2d";
+constexpr StringLiteral kRunLayer4DFnName = "analog_run_layer_4d";
 constexpr StringLiteral kWaitLayers2DFnName = "analog_wait_layers_2d";
 constexpr StringLiteral kWaitLayers4DFnName = "analog_wait_layers_4d";
 constexpr StringLiteral kInvokeLayerPrefix = "analog_invoke_layer_";
@@ -103,7 +104,8 @@ static RankedTensorType makeDynamicLike(RankedTensorType ty) {
 static bool isRuntimeDispatchCallee(StringRef calleeName) {
   return calleeName == kDispatchLayer2DFnName ||
          calleeName == kDispatchLayer4DFnName ||
-         calleeName == kRunLayerFnName ||
+         calleeName == kRunLayer2DFnName ||
+         calleeName == kRunLayer4DFnName ||
          calleeName == kWaitLayers2DFnName ||
          calleeName == kWaitLayers4DFnName;
 }
@@ -186,7 +188,7 @@ static LogicalResult collectLayerCalls(func::FuncOp forward,
 // dispatcher across all collected layer calls.
 
 static FailureOr<DispatcherAbi>
-computeUnifiedDispatcherTypes(SmallVectorImpl<LayerCallInfo> &layers) {
+computeUnifiedDispatcherTypes(MutableArrayRef<LayerCallInfo> layers) {
   RankedTensorType dynInputTy = makeDynamicLike(layers.front().inputTy);
   RankedTensorType dynResultTy = makeDynamicLike(layers.front().resultTy);
   for (LayerCallInfo &info : layers) {
@@ -212,6 +214,19 @@ getRuntimeHookNamesForRank(unsigned rank) {
   case 4:
     return std::make_pair(StringRef(kDispatchLayer4DFnName),
                           StringRef(kWaitLayers4DFnName));
+  default:
+    return failure();
+  }
+}
+
+
+// Returns the generated dispatcher function name for the given tensor rank.
+static FailureOr<StringRef> getDispatcherNameForRank(unsigned rank) {
+  switch (rank) {
+  case 2:
+    return StringRef(kRunLayer2DFnName);
+  case 4:
+    return StringRef(kRunLayer4DFnName);
   default:
     return failure();
   }
@@ -282,8 +297,9 @@ static void rewriteLayerCallSites(MutableArrayRef<LayerCallInfo> layers,
 // shared exit block for dynamic tensor results.
 
 static std::pair<func::FuncOp, Block *> createLayerDispatcherSkeleton(
-    ModuleOp module, RankedTensorType dynInputTy, RankedTensorType dynResultTy) {
-  eraseSymbolIfPresent(module, kRunLayerFnName);
+    ModuleOp module, StringRef fnName, RankedTensorType dynInputTy,
+    RankedTensorType dynResultTy) {
+  eraseSymbolIfPresent(module, fnName);
 
   OpBuilder b(module.getBodyRegion());
   b.setInsertionPointToEnd(&module.getBodyRegion().front());
@@ -291,7 +307,7 @@ static std::pair<func::FuncOp, Block *> createLayerDispatcherSkeleton(
   auto i32Ty = b.getI32Type();
   auto fnTy = b.getFunctionType(TypeRange{dynInputTy, i32Ty},
                                 TypeRange{dynResultTy});
-  auto fn = b.create<func::FuncOp>(module.getLoc(), kRunLayerFnName, fnTy);
+  auto fn = b.create<func::FuncOp>(module.getLoc(), fnName, fnTy);
   fn.setPublic();
 
   Region &bodyRegion = fn.getBody();
@@ -362,10 +378,11 @@ static void emitDispatcherDefaultBlock(Block *defaultBlock, Block *exitBlock,
 
 static func::FuncOp createLayerDispatcher(ModuleOp module,
                                           ArrayRef<LayerCallInfo> layers,
+                                          StringRef fnName,
                                           RankedTensorType dynInputTy,
                                           RankedTensorType dynResultTy) {
   auto [fn, exitBlock] =
-      createLayerDispatcherSkeleton(module, dynInputTy, dynResultTy);
+      createLayerDispatcherSkeleton(module, fnName, dynInputTy, dynResultTy);
   Block *entry = &fn.getBody().front();
   Region &bodyRegion = fn.getBody();
   Value inputArg = entry->getArgument(0);
@@ -450,24 +467,59 @@ void DispatchLayersPass::runOnOperation() {
     return;
   }
 
-  auto maybeTypes = computeUnifiedDispatcherTypes(layers);
-  if (failed(maybeTypes)) {
-    signalPassFailure();
-    return;
+  SmallVector<LayerCallInfo> layers2D;
+  SmallVector<LayerCallInfo> layers4D;
+  for (LayerCallInfo &info : layers) {
+    switch (info.inputTy.getRank()) {
+    case 2:
+      layers2D.push_back(info);
+      break;
+    case 4:
+      layers4D.push_back(info);
+      break;
+    default:
+      info.call.emitError("unsupported tensor rank for layer dispatcher ABI");
+      signalPassFailure();
+      return;
+    }
   }
-  DispatcherAbi abi = *maybeTypes;
 
   eraseSymbolsWithPrefix(module, kInvokeLayerPrefix);
-  FailureOr<LayerRuntimeHooks> maybeHooks =
-      getOrCreateRuntimeHooks(module, abi.dynInputTy, abi.dynResultTy);
-  if (failed(maybeHooks)) {
-    forward.emitError("unsupported tensor rank for layer dispatch hooks");
+  auto processGroup = [&](MutableArrayRef<LayerCallInfo> group) -> LogicalResult {
+    if (group.empty())
+      return success();
+
+    auto maybeTypes = computeUnifiedDispatcherTypes(group);
+    if (failed(maybeTypes)) {
+      return failure();
+    }
+    DispatcherAbi abi = *maybeTypes;
+
+    FailureOr<LayerRuntimeHooks> maybeHooks =
+        getOrCreateRuntimeHooks(module, abi.dynInputTy, abi.dynResultTy);
+    if (failed(maybeHooks)) {
+      forward.emitError("unsupported tensor rank for layer dispatch hooks");
+      return failure();
+    }
+
+    FailureOr<StringRef> maybeDispatcherName =
+        getDispatcherNameForRank(abi.dynInputTy.getRank());
+    if (failed(maybeDispatcherName)) {
+      forward.emitError("unsupported tensor rank for layer dispatcher");
+      return failure();
+    }
+
+    createLayerDispatcher(module, group, *maybeDispatcherName, abi.dynInputTy,
+                          abi.dynResultTy);
+    rewriteLayerCallSites(group, *maybeHooks, abi.dynInputTy, abi.dynResultTy);
+    return success();
+  };
+
+  if (failed(processGroup(MutableArrayRef<LayerCallInfo>(layers2D))) ||
+      failed(processGroup(MutableArrayRef<LayerCallInfo>(layers4D)))) {
     signalPassFailure();
     return;
   }
-  createLayerDispatcher(module, layers, abi.dynInputTy, abi.dynResultTy);
-  rewriteLayerCallSites(layers, *maybeHooks, abi.dynInputTy,
-                        abi.dynResultTy);
 }
 
 
