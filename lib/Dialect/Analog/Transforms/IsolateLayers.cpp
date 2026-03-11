@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
@@ -40,6 +41,64 @@ static Operation *findTopLevelOwner(Operation *op) {
   while (top && !isa<func::FuncOp>(top->getParentOp()))
     top = top->getParentOp();
   return top;
+}
+
+
+// Returns whether every use of the producer stays within top-level owners
+// that are already part of the candidate segment.
+static bool allUsesStayWithinTopLevelOwners(
+    Operation *producer, const DenseSet<Operation *> &segmentOwners) {
+  for (Value result : producer->getResults()) {
+    for (Operation *user : result.getUsers()) {
+      Operation *userTop = findTopLevelOwner(user);
+      if (!userTop || !segmentOwners.contains(userTop))
+        return false;
+    }
+  }
+  return true;
+}
+
+
+// Grows a top-level segment backward to absorb local setup ops that feed the
+// anchor and are only used within the same segment.
+static OpChain buildClosedTopLevelSegment(Operation *anchor) {
+  if (!anchor)
+    return {};
+
+  DenseSet<Operation *> segmentOwners;
+  SmallVector<Operation *> worklist;
+  segmentOwners.insert(anchor);
+  worklist.push_back(anchor);
+
+  while (!worklist.empty()) {
+    Operation *current = worklist.pop_back_val();
+    for (Value operand : current->getOperands()) {
+      Operation *producer = operand.getDefiningOp();
+      if (!producer || isa<arith::ConstantOp>(producer))
+        continue;
+
+      Operation *producerTop = findTopLevelOwner(producer);
+      if (!producerTop || producerTop == current ||
+          producerTop->getBlock() != anchor->getBlock() ||
+          segmentOwners.contains(producerTop)) {
+        continue;
+      }
+
+      if (!allUsesStayWithinTopLevelOwners(producerTop, segmentOwners))
+        continue;
+
+      segmentOwners.insert(producerTop);
+      worklist.push_back(producerTop);
+    }
+  }
+
+  OpChain segment;
+  for (Operation *op = anchor; op; op = op->getPrevNode()) {
+    if (segmentOwners.contains(op))
+      segment.push_back(op);
+  }
+  std::reverse(segment.begin(), segment.end());
+  return segment;
 }
 
 
@@ -133,7 +192,9 @@ static void collectLayerRoutineChains(func::FuncOp func,
     if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
       return;
 
-    layerRoutineChains.push_back(OpChain{topLevelOwner});
+    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    if (!segment.empty())
+      layerRoutineChains.push_back(std::move(segment));
   });
 
   func.walk([&](analog::VectorFromTensorOp op) {
