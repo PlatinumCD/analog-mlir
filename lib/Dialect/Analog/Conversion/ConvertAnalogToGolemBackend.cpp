@@ -100,28 +100,6 @@ static Value castToI32(PatternRewriter &rewriter, Location loc, Value value) {
 }
 
 
-// Packs matrix placement metadata into the hardware/debug array id layout
-// used by backend programming intrinsics.
-static Value buildPackedArrayId(PatternRewriter &rewriter, Location loc, Value row,
-                                Value col, int64_t gridCols, int64_t matrixWidth) {
-  // The debug/hardware matrix-programming ABI packs the physical tile width
-  // into the high 16 bits and the linear array index into the low 16 bits.
-  Value rowI32 = castToI32(rewriter, loc, row);
-  Value colI32 = castToI32(rewriter, loc, col);
-  Value cGridCols = rewriter.create<arith::ConstantIntOp>(loc, gridCols, 32);
-  Value rowBase = rewriter.create<arith::MulIOp>(loc, rowI32, cGridCols);
-  Value linearId = rewriter.create<arith::AddIOp>(loc, rowBase, colI32);
-
-  Value cMask = rewriter.create<arith::ConstantIntOp>(loc, 0xFFFF, 32);
-  Value cMatrixWidth = rewriter.create<arith::ConstantIntOp>(loc, matrixWidth, 32);
-  Value width16 = rewriter.create<arith::AndIOp>(loc, cMatrixWidth, cMask);
-  Value cShift = rewriter.create<arith::ConstantIntOp>(loc, 16, 32);
-  Value upper = rewriter.create<arith::ShLIOp>(loc, width16, cShift);
-  Value lower = rewriter.create<arith::AndIOp>(loc, linearId, cMask);
-  return rewriter.create<arith::OrIOp>(loc, upper, lower);
-}
-
-
 // Computes the flattened array id used by execution and vector-loading
 // intrinsics for a row and column coordinate.
 static Value buildLinearArrayId(PatternRewriter &rewriter, Location loc, Value row,
@@ -472,12 +450,11 @@ public:
                               plan.rowOffset, plan.colOffset, plan.copyRows,
                               plan.copyCols, plan.c0, plan.c1);
 
-    // The hardware matrix-programming path consumes a contiguous physical tile.
-    // After padding, the host buffer stride is always the full array width.
-    int64_t matrixWidth = plan.arrayCols;
-    Value arrayId = buildPackedArrayId(rewriter, op.getLoc(), adaptor.getRowIndex(),
-                                     adaptor.getColIndex(), plan.gridCols,
-                                     matrixWidth);
+    // Matrix-programming now uses the same raw linear array id contract as the
+    // other accelerator calls because the scratch tile is already contiguous.
+    Value arrayId = buildLinearArrayId(rewriter, op.getLoc(),
+                                       adaptor.getRowIndex(),
+                                       adaptor.getColIndex(), plan.gridCols);
 
     emitIntrinsicCall(rewriter, op.getLoc(), kSetIntrinsicName,
                       {arrayMemref, arrayId});
