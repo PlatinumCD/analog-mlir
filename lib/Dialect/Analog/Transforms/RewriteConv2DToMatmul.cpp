@@ -52,7 +52,6 @@ struct SlidingWindowLoweringState {
   Type elementType;
   int64_t patchWidth;
   RankedTensorType patchTy;
-  RankedTensorType channelFilterTy;
   RankedTensorType matmulResultTy;
   RankedTensorType outputTy;
   Value c0;
@@ -414,9 +413,8 @@ static SlidingWindowLoweringState buildSlidingWindowState(OpBuilder &builder,
   Location loc = match.convOp.getLoc();
   Type elementType = match.inputTy.getElementType();
   int64_t patchWidth = match.kh * match.kw;
-  auto patchTy = RankedTensorType::get({1, patchWidth}, elementType);
-  auto channelFilterTy =
-      RankedTensorType::get({patchWidth, match.f}, elementType);
+  auto patchTy =
+      RankedTensorType::get({1, match.c * patchWidth}, elementType);
   auto matmulResultTy = RankedTensorType::get({1, match.f}, elementType);
 
   SlidingWindowLoweringState state{
@@ -424,7 +422,6 @@ static SlidingWindowLoweringState buildSlidingWindowState(OpBuilder &builder,
       elementType,
       patchWidth,
       patchTy,
-      channelFilterTy,
       matmulResultTy,
       match.outputTy,
       builder.create<arith::ConstantIndexOp>(loc, 0),
@@ -450,87 +447,76 @@ static SlidingWindowLoweringState buildSlidingWindowState(OpBuilder &builder,
 }
 
 
-// Materializes the flattened input patch for one output position and
-// one input channel.
+// Materializes the fully flattened input patch for one output position
+// across all input channels in `[C * KH * KW]` order.
 
-static Value buildChannelPatch(OpBuilder &builder, MatchedConv2D &match,
-                               const SlidingWindowLoweringState &state,
-                               Value ohIdx, Value owIdx, Value cIdx) {
+static Value buildFlattenedPatch(OpBuilder &builder, MatchedConv2D &match,
+                                 const SlidingWindowLoweringState &state,
+                                 Value ohIdx, Value owIdx) {
   Value patchInit =
       builder.create<tensor::EmptyOp>(state.loc, state.patchTy.getShape(),
                                       state.elementType);
-  auto khLoop = builder.create<scf::ForOp>(
-      state.loc, state.c0, state.khUpper, state.c1, ValueRange{patchInit},
-      [&](OpBuilder &khBuilder, Location khLoc, Value khIdx,
-          ValueRange khIterArgs) {
-        auto kwLoop = khBuilder.create<scf::ForOp>(
-            khLoc, state.c0, state.kwUpper, state.c1, khIterArgs,
-            [&](OpBuilder &kwBuilder, Location kwLoc, Value kwIdx,
-                ValueRange kwIterArgs) {
-              Value ihBase =
-                  kwBuilder.create<arith::MulIOp>(kwLoc, ohIdx, state.strideH);
-              Value iwBase =
-                  kwBuilder.create<arith::MulIOp>(kwLoc, owIdx, state.strideW);
-              Value ih = kwBuilder.create<arith::AddIOp>(kwLoc, ihBase, khIdx);
-              Value iw = kwBuilder.create<arith::AddIOp>(kwLoc, iwBase, kwIdx);
-              Value inputValue = kwBuilder.create<tensor::ExtractOp>(
-                  kwLoc, match.activation, ValueRange{state.c0, cIdx, ih, iw});
-              Value khOffset =
-                  kwBuilder.create<arith::MulIOp>(kwLoc, khIdx, state.kwValue);
-              Value flatIndex =
-                  kwBuilder.create<arith::AddIOp>(kwLoc, khOffset, kwIdx);
-              Value updatedPatch = kwBuilder.create<tensor::InsertOp>(
-                  kwLoc, inputValue, kwIterArgs[0],
-                  ValueRange{state.c0, flatIndex});
-              kwBuilder.create<scf::YieldOp>(kwLoc, updatedPatch);
+  auto channelLoop = builder.create<scf::ForOp>(
+      state.loc, state.c0, state.cUpper, state.c1, ValueRange{patchInit},
+      [&](OpBuilder &channelBuilder, Location channelLoc, Value cIdx,
+          ValueRange channelIterArgs) {
+        auto khLoop = channelBuilder.create<scf::ForOp>(
+            channelLoc, state.c0, state.khUpper, state.c1, channelIterArgs,
+            [&](OpBuilder &khBuilder, Location khLoc, Value khIdx,
+                ValueRange khIterArgs) {
+              auto kwLoop = khBuilder.create<scf::ForOp>(
+                  khLoc, state.c0, state.kwUpper, state.c1, khIterArgs,
+                  [&](OpBuilder &kwBuilder, Location kwLoc, Value kwIdx,
+                      ValueRange kwIterArgs) {
+                    Value ihBase = kwBuilder.create<arith::MulIOp>(
+                        kwLoc, ohIdx, state.strideH);
+                    Value iwBase = kwBuilder.create<arith::MulIOp>(
+                        kwLoc, owIdx, state.strideW);
+                    Value ih =
+                        kwBuilder.create<arith::AddIOp>(kwLoc, ihBase, khIdx);
+                    Value iw =
+                        kwBuilder.create<arith::AddIOp>(kwLoc, iwBase, kwIdx);
+                    Value inputValue = kwBuilder.create<tensor::ExtractOp>(
+                        kwLoc, match.activation,
+                        ValueRange{state.c0, cIdx, ih, iw});
+                    Value channelOffset = kwBuilder.create<arith::MulIOp>(
+                        kwLoc, cIdx, state.patchWidthValue);
+                    Value khOffset = kwBuilder.create<arith::MulIOp>(
+                        kwLoc, khIdx, state.kwValue);
+                    Value patchOffset = kwBuilder.create<arith::AddIOp>(
+                        kwLoc, channelOffset, khOffset);
+                    Value flatIndex = kwBuilder.create<arith::AddIOp>(
+                        kwLoc, patchOffset, kwIdx);
+                    Value updatedPatch = kwBuilder.create<tensor::InsertOp>(
+                        kwLoc, inputValue, kwIterArgs[0],
+                        ValueRange{state.c0, flatIndex});
+                    kwBuilder.create<scf::YieldOp>(kwLoc, updatedPatch);
+                  });
+              khBuilder.create<scf::YieldOp>(khLoc, kwLoop.getResult(0));
             });
-        khBuilder.create<scf::YieldOp>(khLoc, kwLoop.getResult(0));
+        channelBuilder.create<scf::YieldOp>(channelLoc, khLoop.getResult(0));
       });
-  return khLoop.getResult(0);
+  channelLoop->setAttr(kSlidingWindowPatchAttr, builder.getUnitAttr());
+  return channelLoop.getResult(0);
 }
 
 
-// Slices the transposed filter down to the rows corresponding to a
-// single input channel.
+// Runs the full flattened patch matmul for one output position.
 
-static Value buildChannelFilterSlice(OpBuilder &builder,
-                                     const SlidingWindowLoweringState &state,
-                                     Value cIdx, int64_t filterRows,
-                                     int64_t filterCols) {
-  Value channelOffset =
-      builder.create<arith::MulIOp>(state.loc, cIdx, state.patchWidthValue);
-  SmallVector<OpFoldResult> filterOffsets = {channelOffset, builder.getIndexAttr(0)};
-  SmallVector<OpFoldResult> filterSizes = {builder.getIndexAttr(filterRows),
-                                           builder.getIndexAttr(filterCols)};
-  SmallVector<OpFoldResult> filterStrides = {builder.getIndexAttr(1),
-                                             builder.getIndexAttr(1)};
-  return builder.create<tensor::ExtractSliceOp>(
-      state.loc, state.channelFilterTy, state.transposedFilter, filterOffsets,
-      filterSizes, filterStrides);
-}
-
-
-// Runs one channel-local matmul and accumulates it into the partial
-// result tensor for the current output window.
-
-static Value buildChannelMatmul(OpBuilder &builder, MatchedConv2D &match,
-                                const SlidingWindowLoweringState &state,
-                                Value patch, Value filterSlice, Value partial) {
+static Value buildPatchMatmul(OpBuilder &builder, MatchedConv2D &match,
+                              const SlidingWindowLoweringState &state,
+                              Value patch) {
   Value matmulInit = buildZeroInitializedTensor(builder, state.loc,
                                                 state.matmulResultTy,
                                                 state.zeroValue);
   auto matmulOp = builder.create<linalg::MatmulOp>(
-      state.loc, state.matmulResultTy, ValueRange{patch, filterSlice},
+      state.loc, state.matmulResultTy, ValueRange{patch, state.transposedFilter},
       ValueRange{matmulInit});
   matmulOp->setAttr(kSlidingWindowMatmulAttr, builder.getUnitAttr());
   if (auto matrixSourceId = match.filterRank2Const->getAttr(kMatrixSourceIdAttr)) {
     matmulOp->setAttr(kMatrixSourceIdAttr, matrixSourceId);
   }
-
-  auto addOp = builder.create<linalg::AddOp>(
-      state.loc, ValueRange{partial, matmulOp.getResult(0)},
-      ValueRange{partial});
-  return addOp.getResultTensors().front();
+  return matmulOp.getResult(0);
 }
 
 
@@ -572,46 +558,17 @@ static Value assembleOutputChannels(OpBuilder &builder,
 }
 
 
-// Accumulates all input-channel contributions for one output position
-// before bias and channel assembly are applied.
-
-static Value accumulateChannelContributions(OpBuilder &builder,
-                                            MatchedConv2D &match,
-                                            const SlidingWindowLoweringState &state,
-                                            Value ohIdx, Value owIdx) {
-  Value partialInit =
-      buildZeroInitializedTensor(builder, state.loc, state.matmulResultTy,
-                                 state.zeroValue);
-
-  auto channelLoop = builder.create<scf::ForOp>(
-      state.loc, state.c0, state.cUpper, state.c1, ValueRange{partialInit},
-      [&](OpBuilder &channelBuilder, Location channelLoc, Value cIdx,
-          ValueRange channelIterArgs) {
-        Value patch =
-            buildChannelPatch(channelBuilder, match, state, ohIdx, owIdx, cIdx);
-        Value filterSlice = buildChannelFilterSlice(
-            channelBuilder, state, cIdx, state.patchWidth, match.f);
-        Value updatedPartial = buildChannelMatmul(
-            channelBuilder, match, state, patch, filterSlice,
-            channelIterArgs[0]);
-        channelBuilder.create<scf::YieldOp>(channelLoc, updatedPartial);
-      });
-  channelLoop->setAttr(kSlidingWindowPatchAttr, builder.getUnitAttr());
-  return channelLoop.getResult(0);
-}
-
-
-// Lowers a single output position by accumulating channel work, adding
+// Lowers a single output position by building one flattened patch, running
+// the full MVM, adding bias, and stitching the result back into the output tensor.
 // bias, and stitching the result back into the output tensor.
 
 static Value lowerOutputPosition(OpBuilder &builder, MatchedConv2D &match,
                                  const SlidingWindowLoweringState &state,
                                  Value ohIdx, Value owIdx,
                                  Value currentOutput) {
-  Value accumulatedChannels =
-      accumulateChannelContributions(builder, match, state, ohIdx, owIdx);
-  Value biasedResult =
-      addBiasToChannelResult(builder, state, accumulatedChannels);
+  Value patch = buildFlattenedPatch(builder, match, state, ohIdx, owIdx);
+  Value matmulResult = buildPatchMatmul(builder, match, state, patch);
+  Value biasedResult = addBiasToChannelResult(builder, state, matmulResult);
   return assembleOutputChannels(builder, state, biasedResult, ohIdx, owIdx,
                                 currentOutput);
 }

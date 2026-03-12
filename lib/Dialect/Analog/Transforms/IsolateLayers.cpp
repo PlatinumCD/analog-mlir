@@ -6,6 +6,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -97,6 +98,42 @@ static bool isConvBoundaryTopLevelOp(Operation *op) {
   return isAbsorbableTopLevelSetupOp(op) || isTopLevelConvAssembly(op) ||
          op->hasAttr(kSlidingWindowPatchAttr) ||
          op->hasAttr(kSlidingWindowBiasAddAttr);
+}
+
+
+// Returns whether the top-level op belongs to a flattened degenerate conv
+// sequence that canonicalization has pulled out of the rewritten loop nest.
+static bool isDegenerateConvBoundaryTopLevelOp(Operation *op) {
+  if (!op)
+    return false;
+
+  return isAbsorbableTopLevelSetupOp(op) || isa<memref::AllocOp,
+                                                bufferization::ToTensorOp,
+                                                analog::VectorFromTensorOp,
+                                                analog::VectorPartitionOp,
+                                                scf::ForOp>(op) ||
+         op->hasAttr(kSlidingWindowPatchAttr) ||
+         op->hasAttr(kSlidingWindowBiasAddAttr) ||
+         op->hasAttr(kOutputChannelAssemblyAttr);
+}
+
+
+// Builds the contiguous top-level segment for a degenerate 1x1 conv after
+// canonicalization has flattened the conv execution chain in the function.
+static OpChain buildDegenerateConvSegment(Operation *assemblyOp) {
+  if (!assemblyOp || !isTopLevelConvAssembly(assemblyOp))
+    return {};
+
+  OpChain segment;
+  for (Operation *op = assemblyOp; op; op = op->getPrevNode()) {
+    if (!isDegenerateConvBoundaryTopLevelOp(op))
+      break;
+    if (isa<tensor::EmptyOp>(op))
+      continue;
+    segment.push_back(op);
+  }
+  std::reverse(segment.begin(), segment.end());
+  return segment;
 }
 
 
@@ -254,7 +291,12 @@ static void collectLayerRoutineChains(func::FuncOp func,
     if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
       return;
 
-    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    OpChain segment;
+    if (topLevelOwner == op) {
+      segment = buildDegenerateConvSegment(op);
+    } else {
+      segment = buildClosedTopLevelSegment(topLevelOwner);
+    }
     if (!segment.empty()) {
       for (Operation *segmentOp : segment)
         seenTopLevelOwners.insert(segmentOp);
@@ -351,6 +393,9 @@ static void computeEscapingResults(ArrayRef<Operation *> segment,
     if (!cur)
       continue;
     cur->walk([&](Operation *nested) {
+      if (isa<tensor::EmptyOp>(nested))
+        return;
+
       for (Value res : nested->getResults()) {
         bool escapes = false;
         for (Operation *user : res.getUsers()) {
@@ -437,6 +482,39 @@ static void collectExternalValuesForRegion(
         continue;
       externalValues.push_back(operand);
     }
+  });
+}
+
+
+// Returns whether the value is available at the execute-region call site
+// without depending on an op defined later in the same block.
+static bool isValueAvailableAtOp(Value value, Operation *op) {
+  if (!value || !op)
+    return false;
+
+  if (isa<BlockArgument>(value))
+    return true;
+
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp)
+    return false;
+
+  if (definingOp->getBlock() != op->getBlock())
+    return true;
+
+  if (definingOp == op)
+    return false;
+
+  return definingOp->isBeforeInBlock(op);
+}
+
+
+// Drops any captured values that are not actually available at the execute
+// region insertion point, preventing invalid helper call operands.
+static void filterUndominatedExternalValues(scf::ExecuteRegionOp exec,
+                                            SmallVectorImpl<Value> &values) {
+  llvm::erase_if(values, [&](Value value) {
+    return !isValueAvailableAtOp(value, exec.getOperation());
   });
 }
 
@@ -847,6 +925,7 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
   std::string fnName = buildOutlinedFunctionName(prefix, id);
   SmallVector<Value> externalInputs;
   collectExternalValuesForRegion(exec, externalInputs);
+  filterUndominatedExternalValues(exec, externalInputs);
 
   func::FuncOp outlined = module.lookupSymbol<func::FuncOp>(fnName);
   if (!outlined) {
