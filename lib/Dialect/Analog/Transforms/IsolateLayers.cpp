@@ -111,6 +111,9 @@ static bool isDegenerateConvBoundaryTopLevelOp(Operation *op) {
                                                 bufferization::ToTensorOp,
                                                 analog::VectorFromTensorOp,
                                                 analog::VectorPartitionOp,
+                                                analog::ArrayVectorPlaceOp,
+                                                analog::ArrayExecuteOp,
+                                                analog::ArrayStoreOp,
                                                 scf::ForOp>(op) ||
          op->hasAttr(kSlidingWindowPatchAttr) ||
          op->hasAttr(kSlidingWindowBiasAddAttr) ||
