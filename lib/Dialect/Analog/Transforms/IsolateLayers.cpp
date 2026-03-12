@@ -262,6 +262,75 @@ static void collectMatrixInitializationChains(func::FuncOp func,
 }
 
 
+// Returns whether the generic op is a pointwise floating-point add used to
+// apply a bias tensor to a linear routine result.
+static bool isPointwiseAddGeneric(linalg::GenericOp generic) {
+  if (!generic || generic.getNumDpsInputs() != 2 || generic.getNumDpsInits() != 1)
+    return false;
+
+  Block &body = generic->getRegion(0).front();
+  auto it = body.begin();
+  auto add = dyn_cast<arith::AddFOp>(*it++);
+  if (!add)
+    return false;
+
+  auto yield = dyn_cast<linalg::YieldOp>(*it++);
+  if (!yield || it != body.end())
+    return false;
+
+  return yield.getValues().size() == 1 &&
+         yield.getValues().front() == add.getResult();
+}
+
+
+// Returns whether the top-level op immediately after a linear routine applies
+// a bias tensor to the routine result without changing its rank.
+static bool isImmediateLinearBiasAddTopLevelOp(Operation *op,
+                                               Operation *producer) {
+  if (!op || !producer)
+    return false;
+  if (producer->getNumResults() != 1 || op->getNumResults() != 1)
+    return false;
+
+  Value result = producer->getResult(0);
+  bool usesResult = false;
+  for (Value operand : op->getOperands()) {
+    if (operand == result) {
+      usesResult = true;
+      break;
+    }
+  }
+  if (!usesResult)
+    return false;
+
+  auto resultTy = dyn_cast<RankedTensorType>(result.getType());
+  if (!resultTy)
+    return false;
+
+  auto outputTy = dyn_cast<RankedTensorType>(op->getResultTypes().front());
+  if (!outputTy || outputTy != resultTy)
+    return false;
+
+  if (auto add = dyn_cast<linalg::AddOp>(op)) {
+    Value lhs = add.getInputs()[0];
+    Value rhs = add.getInputs()[1];
+    Value bias = lhs == result ? rhs : rhs == result ? lhs : Value();
+    return bias && isa_and_present<arith::ConstantOp>(bias.getDefiningOp());
+  }
+
+  auto generic = dyn_cast<linalg::GenericOp>(op);
+  if (!generic || !isPointwiseAddGeneric(generic))
+    return false;
+  if (generic.getNumDpsInputs() != 2 || generic.getNumDpsInits() != 1)
+    return false;
+
+  Value lhs = generic->getOperand(0);
+  Value rhs = generic->getOperand(1);
+  Value bias = lhs == result ? rhs : rhs == result ? lhs : Value();
+  return bias && isa_and_present<arith::ConstantOp>(bias.getDefiningOp());
+}
+
+
 // Finds the op segments that implement one analog layer routine from
 // vector materialization through tensor re-materialization.
 
@@ -330,6 +399,10 @@ static void collectLayerRoutineChains(func::FuncOp func,
     }
     if (!endTop)
       return;
+
+    Operation *nextTop = endTop->getNextNode();
+    if (isImmediateLinearBiasAddTopLevelOp(nextTop, endTop))
+      endTop = nextTop;
 
     OpChain chain;
     for (Operation *cur = startTop; cur; cur = cur->getNextNode()) {
