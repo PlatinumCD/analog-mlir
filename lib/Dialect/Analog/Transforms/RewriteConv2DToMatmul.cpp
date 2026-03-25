@@ -4,7 +4,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -84,16 +86,14 @@ struct ConvTensorShapeInfo {
 };
 
 
-// Finds the rank-2 filter constant emitted by the prepare pass next to
-// the original rank-4 filter constant.
+// Finds the flattened rank-2 filter constant when one has already been
+// materialized next to the original rank-4 filter constant.
 
 static arith::ConstantOp findPreparedFlattenedFilter(arith::ConstantOp filterConst) {
   if (!filterConst || !filterConst->hasAttr(kDeleteInFuturePassAttr)) {
     return {};
   }
 
-  // PrepareConv2DToMatmul emits the flattened weight constant immediately
-  // after the original rank-4 filter. This helper relies on that adjacency.
   Operation *next = filterConst->getNextNode();
   auto flattenedConst = dyn_cast_or_null<arith::ConstantOp>(next);
   if (!flattenedConst) {
@@ -105,6 +105,60 @@ static arith::ConstantOp findPreparedFlattenedFilter(arith::ConstantOp filterCon
     return {};
   }
 
+  return flattenedConst;
+}
+
+
+// Computes the rank-2 tensor type produced by flattening `[F, C, KH, KW]`
+// filter constants into `[F, C * KH * KW]`.
+
+static RankedTensorType buildFlattenedTensorType(RankedTensorType tensorTy) {
+  auto shape = tensorTy.getShape();
+  int64_t flattenedCols = shape[1] * shape[2] * shape[3];
+  return RankedTensorType::get({shape[0], flattenedCols},
+                               tensorTy.getElementType());
+}
+
+
+// Rebuilds the filter constant payload with the flattened type while
+// preserving dense or resource-backed storage.
+
+static TypedAttr buildFlattenedAttr(arith::ConstantOp op,
+                                    RankedTensorType flattenedTy) {
+  if (auto denseAttr = dyn_cast<DenseElementsAttr>(op.getValue())) {
+    return denseAttr.reshape(flattenedTy);
+  }
+
+  if (auto resourceAttr = dyn_cast<DenseResourceElementsAttr>(op.getValue())) {
+    return DenseResourceElementsAttr::get(flattenedTy,
+                                          resourceAttr.getRawHandle());
+  }
+
+  return {};
+}
+
+
+// Creates the flattened rank-2 filter constant on demand when no
+// prepare pass has already materialized it.
+
+static FailureOr<arith::ConstantOp> getOrCreateFlattenedFilter(
+    arith::ConstantOp filterConst, RankedTensorType filterRank4Ty) {
+  if (auto flattenedConst = findPreparedFlattenedFilter(filterConst)) {
+    return flattenedConst;
+  }
+
+  RankedTensorType flattenedTy = buildFlattenedTensorType(filterRank4Ty);
+  TypedAttr flattenedAttr = buildFlattenedAttr(filterConst, flattenedTy);
+  if (!flattenedAttr) {
+    return failure();
+  }
+
+  OpBuilder builder(filterConst);
+  builder.setInsertionPointAfter(filterConst);
+  auto flattenedConst =
+      builder.create<arith::ConstantOp>(filterConst.getLoc(), flattenedTy,
+                                        flattenedAttr);
+  filterConst->setAttr(kDeleteInFuturePassAttr, builder.getUnitAttr());
   return flattenedConst;
 }
 
@@ -206,12 +260,13 @@ getSupportedFilterConstants(Value filter) {
     return failure();
   }
 
-  auto filterRank2Const = findPreparedFlattenedFilter(filterRank4Const);
-  if (!filterRank2Const) {
+  auto filterRank2Const =
+      getOrCreateFlattenedFilter(filterRank4Const, filterRank4Ty);
+  if (failed(filterRank2Const)) {
     return failure();
   }
 
-  auto filterRank2Ty = dyn_cast<RankedTensorType>(filterRank2Const.getType());
+  auto filterRank2Ty = dyn_cast<RankedTensorType>((*filterRank2Const).getType());
   if (!filterRank2Ty || !filterRank2Ty.hasStaticShape() ||
       filterRank2Ty.getRank() != 2) {
     return failure();
@@ -220,7 +275,7 @@ getSupportedFilterConstants(Value filter) {
     return failure();
   }
 
-  return std::make_tuple(filterRank4Const, filterRank4Ty, filterRank2Const,
+  return std::make_tuple(filterRank4Const, filterRank4Ty, *filterRank2Const,
                          filterRank2Ty);
 }
 
