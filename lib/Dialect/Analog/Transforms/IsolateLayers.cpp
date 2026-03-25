@@ -31,6 +31,7 @@ using TaggedOpChainList = SmallVector<TaggedOpChain>;
 
 constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initialization";
 constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
+constexpr StringLiteral kConv1DRoutineAttr = "analog-conv1d-routine";
 constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
@@ -39,7 +40,9 @@ constexpr StringLiteral kSlidingWindowPatchAttr = "analog.sliding_window_patch";
 constexpr StringLiteral kSlidingWindowBiasAddAttr = "analog.sliding_window_bias_add";
 constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
 constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
+constexpr StringLiteral kConv1DRoutinePrefix = "analog_conv1d_routine_";
 constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
+constexpr StringLiteral kRewrittenConv1DOutputAttr = "analog.rewritten_conv1d_output";
 constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
 
 
@@ -337,6 +340,23 @@ static bool isImmediateLinearBiasAddTopLevelOp(Operation *op,
 static void collectLayerRoutineChains(func::FuncOp func,
                                       TaggedOpChainList &layerRoutineChains) {
   DenseSet<Operation *> seenTopLevelOwners;
+
+  func.walk([&](Operation *op) {
+    if (!op->hasAttr(kRewrittenConv1DOutputAttr))
+      return;
+
+    Operation *topLevelOwner = findTopLevelOwner(op);
+    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+      return;
+
+    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    if (!segment.empty()) {
+      for (Operation *segmentOp : segment)
+        seenTopLevelOwners.insert(segmentOp);
+      layerRoutineChains.push_back(
+          {std::move(segment), StringRef(kConv1DRoutineAttr)});
+    }
+  });
 
   func.walk([&](Operation *op) {
     if (!op->hasAttr(kRewrittenConv2DOutputAttr))
@@ -709,6 +729,7 @@ static bool isOutlinedHelperFunction(func::FuncOp func) {
   StringRef name = func.getSymName();
   return name.starts_with(kMatrixInitializationPrefix) ||
          name.starts_with(kLinearRoutinePrefix) ||
+         name.starts_with(kConv1DRoutinePrefix) ||
          name.starts_with(kConv2DRoutinePrefix);
 }
 
@@ -1055,6 +1076,8 @@ static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
   for (auto [tag, prefix] : {
            std::pair<StringRef, StringRef>{kLinearRoutineAttr,
                                            kLinearRoutinePrefix},
+           std::pair<StringRef, StringRef>{kConv1DRoutineAttr,
+                                           kConv1DRoutinePrefix},
            std::pair<StringRef, StringRef>{kConv2DRoutineAttr,
                                            kConv2DRoutinePrefix},
        }) {

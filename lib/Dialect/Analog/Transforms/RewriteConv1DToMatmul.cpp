@@ -30,7 +30,7 @@ static constexpr llvm::StringLiteral kOutputChannelAssemblyAttr =
 static constexpr llvm::StringLiteral kSlidingWindowPatchAttr =
     "analog.sliding_window_patch";
 static constexpr llvm::StringLiteral kRewrittenConvOutputAttr =
-    "analog.rewritten_conv2d_output";
+    "analog.rewritten_conv1d_output";
 
 struct MatchedConv1D {
   linalg::Conv1DNcwFcwOp convOp;
