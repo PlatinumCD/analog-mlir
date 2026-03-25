@@ -1,5 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/Passes.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PrepareConv2DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
@@ -27,6 +28,7 @@ void registerAnalogPasses() {
 
   // Leaf passes ONLY
   PassRegistration<PrepareConv2DToMatmulPass>();
+  PassRegistration<RewriteConv1DToMatmulPass>();
   PassRegistration<RewriteConv2DToMatmulPass>();
   PassRegistration<MaterializeMatrixFromTensorPass>();
   PassRegistration<MaterializeVectorFromTensorPass>();

@@ -7,6 +7,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PrepareConv2DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
@@ -38,6 +39,7 @@ void mlir::analog::registerRewriteConvToMatmulPipeline() {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
         funcPM.addPass(createPrepareConv2DToMatmulPass());
         funcPM.addPass(createRewriteConv2DToMatmulPass());
+        funcPM.addPass(createRewriteConv1DToMatmulPass());
       });
 }
 
