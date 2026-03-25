@@ -62,7 +62,7 @@ It extends MLIR with an `analog` dialect and a sequence of transformation passes
 
 | Pipeline | Contains |
 |---|---|
-| `analog-rewrite-conv-to-matmul` | `PrepareConv2DToMatmulPass` + `RewriteConv2DToMatmulPass` |
+| `analog-rewrite-conv-to-matmul` | `PrepareConv2DToMatmulPass` + `RewriteConv2DToMatmulPass` + `RewriteConv1DToMatmulPass` |
 | `analog-materialize-and-place` | Matrix/vector materialization, partitioning, and placement |
 | `analog-execute-and-replace` | Array execution, result reduction, and matmul replacement |
 | `analog-dispatch-runtime` | Layer isolation plus weight/layer dispatch entrypoints |

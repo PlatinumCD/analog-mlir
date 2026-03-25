@@ -196,7 +196,9 @@ getSupportedInputAndOutputTypes(linalg::Conv1DNcwFcwOp convOp,
 
 
 // Validates the broadcasted bias initializer and returns the broadcast
-// op together with the 1-D bias tensor type.
+// op together with the bias tensor type. This lowering accepts either a
+// rank-1 bias vector broadcast across the spatial dimensions or a
+// rank-0 scalar broadcast across the full output tensor.
 
 static FailureOr<std::pair<linalg::BroadcastOp, RankedTensorType>>
 getSupportedBiasBroadcast(Value outputInit, RankedTensorType outputTy) {
@@ -211,14 +213,23 @@ getSupportedBiasBroadcast(Value outputInit, RankedTensorType outputTy) {
       !broadcastInitTy.hasStaticShape()) {
     return failure();
   }
-  if (biasTy.getRank() != 1 || broadcastInitTy.getRank() != 3)
+  if (!biasTy.getElementType().isF32())
+    return failure();
+  if (broadcastInitTy.getRank() != 3)
     return failure();
   if (broadcastInitTy != outputTy)
     return failure();
 
   auto dims = broadcastOp.getDimensions();
-  if (dims.size() != 2 || dims[0] != 0 || dims[1] != 2)
+  if (biasTy.getRank() == 0) {
+    if (dims.size() != 3 || dims[0] != 0 || dims[1] != 1 || dims[2] != 2)
+      return failure();
+  } else if (biasTy.getRank() == 1) {
+    if (dims.size() != 2 || dims[0] != 0 || dims[1] != 2)
+      return failure();
+  } else {
     return failure();
+  }
 
   return std::make_pair(broadcastOp, biasTy);
 }
@@ -307,7 +318,9 @@ static FailureOr<ConvTensorShapeInfo> getValidatedShapeInfo(
       filterFlatShape[1] != shapeInfo.c * shapeInfo.kw) {
     return failure();
   }
-  if (biasShape[0] != shapeInfo.f)
+  if (biasTy.getRank() == 1 && biasShape[0] != shapeInfo.f)
+    return failure();
+  if (biasTy.getRank() != 0 && biasTy.getRank() != 1)
     return failure();
   if (outN != shapeInfo.n || outF != shapeInfo.f)
     return failure();
@@ -393,15 +406,27 @@ static Value buildTransposedFilter(OpBuilder &builder, MatchedConv1D &match,
 }
 
 
-// Expands the bias vector into the same shape used by each per-window
-// matmul result.
+// Expands the bias into the same shape used by each per-window matmul
+// result. A rank-1 bias is expanded with tensor semantics; a rank-0 bias
+// is broadcast directly to the matmul result shape.
 
 static Value buildExpandedBias(OpBuilder &builder, MatchedConv1D &match,
                                const SlidingWindowLoweringState &state) {
-  SmallVector<ReassociationIndices, 2> biasExpandReassociation = {{0, 1}};
-  return builder.create<tensor::ExpandShapeOp>(state.loc, state.matmulResultTy,
-                                               match.bias,
-                                               biasExpandReassociation);
+  auto biasTy = dyn_cast<RankedTensorType>(match.bias.getType());
+  if (biasTy && biasTy.getRank() == 1) {
+    SmallVector<ReassociationIndices, 2> biasExpandReassociation = {{0, 1}};
+    return builder.create<tensor::ExpandShapeOp>(state.loc, state.matmulResultTy,
+                                                 match.bias,
+                                                 biasExpandReassociation);
+  }
+
+  Value biasInit = builder.create<tensor::EmptyOp>(
+      state.loc, state.matmulResultTy.getShape(), state.elementType);
+  return builder
+      .create<linalg::BroadcastOp>(state.loc, match.bias, biasInit,
+                                   ArrayRef<int64_t>{0, 1})
+      .getResult()
+      .front();
 }
 
 

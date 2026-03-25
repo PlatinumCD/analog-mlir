@@ -33,7 +33,7 @@ struct RewriteConvToMatmulPipelineOptions
 void mlir::analog::registerRewriteConvToMatmulPipeline() {
   PassPipelineRegistration<RewriteConvToMatmulPipelineOptions>(
       "analog-rewrite-conv-to-matmul",
-      "Rewrite supported conv2d ops into a matmul-oriented form",
+      "Rewrite supported conv2d and conv1d ops into a matmul-oriented form",
       [](OpPassManager &pm,
          const RewriteConvToMatmulPipelineOptions &) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
