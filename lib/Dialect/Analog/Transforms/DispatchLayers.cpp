@@ -19,10 +19,13 @@ namespace {
 
 constexpr StringLiteral kForwardFnName = "forward";
 constexpr StringLiteral kDispatchLayer2DFnName = "analog_dispatch_layer_2d";
+constexpr StringLiteral kDispatchLayer3DFnName = "analog_dispatch_layer_3d";
 constexpr StringLiteral kDispatchLayer4DFnName = "analog_dispatch_layer_4d";
 constexpr StringLiteral kRunLayer2DFnName = "analog_run_layer_2d";
+constexpr StringLiteral kRunLayer3DFnName = "analog_run_layer_3d";
 constexpr StringLiteral kRunLayer4DFnName = "analog_run_layer_4d";
 constexpr StringLiteral kWaitLayers2DFnName = "analog_wait_layers_2d";
+constexpr StringLiteral kWaitLayers3DFnName = "analog_wait_layers_3d";
 constexpr StringLiteral kWaitLayers4DFnName = "analog_wait_layers_4d";
 constexpr StringLiteral kInvokeLayerPrefix = "analog_invoke_layer_";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
@@ -103,10 +106,13 @@ static RankedTensorType makeDynamicLike(RankedTensorType ty) {
 
 static bool isRuntimeDispatchCallee(StringRef calleeName) {
   return calleeName == kDispatchLayer2DFnName ||
+         calleeName == kDispatchLayer3DFnName ||
          calleeName == kDispatchLayer4DFnName ||
          calleeName == kRunLayer2DFnName ||
+         calleeName == kRunLayer3DFnName ||
          calleeName == kRunLayer4DFnName ||
          calleeName == kWaitLayers2DFnName ||
+         calleeName == kWaitLayers3DFnName ||
          calleeName == kWaitLayers4DFnName;
 }
 
@@ -211,6 +217,9 @@ getRuntimeHookNamesForRank(unsigned rank) {
   case 2:
     return std::make_pair(StringRef(kDispatchLayer2DFnName),
                           StringRef(kWaitLayers2DFnName));
+  case 3:
+    return std::make_pair(StringRef(kDispatchLayer3DFnName),
+                          StringRef(kWaitLayers3DFnName));
   case 4:
     return std::make_pair(StringRef(kDispatchLayer4DFnName),
                           StringRef(kWaitLayers4DFnName));
@@ -225,6 +234,8 @@ static FailureOr<StringRef> getDispatcherNameForRank(unsigned rank) {
   switch (rank) {
   case 2:
     return StringRef(kRunLayer2DFnName);
+  case 3:
+    return StringRef(kRunLayer3DFnName);
   case 4:
     return StringRef(kRunLayer4DFnName);
   default:
@@ -468,11 +479,15 @@ void DispatchLayersPass::runOnOperation() {
   }
 
   SmallVector<LayerCallInfo> layers2D;
+  SmallVector<LayerCallInfo> layers3D;
   SmallVector<LayerCallInfo> layers4D;
   for (LayerCallInfo &info : layers) {
     switch (info.inputTy.getRank()) {
     case 2:
       layers2D.push_back(info);
+      break;
+    case 3:
+      layers3D.push_back(info);
       break;
     case 4:
       layers4D.push_back(info);
@@ -516,6 +531,7 @@ void DispatchLayersPass::runOnOperation() {
   };
 
   if (failed(processGroup(MutableArrayRef<LayerCallInfo>(layers2D))) ||
+      failed(processGroup(MutableArrayRef<LayerCallInfo>(layers3D))) ||
       failed(processGroup(MutableArrayRef<LayerCallInfo>(layers4D)))) {
     signalPassFailure();
     return;
