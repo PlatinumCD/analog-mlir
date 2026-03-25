@@ -88,7 +88,7 @@ struct ConvTensorShapeInfo {
 
 static arith::ConstantOp findPreparedFlattenedFilter(
     arith::ConstantOp filterConst) {
-  if (!filterConst)
+  if (!filterConst || !filterConst->hasAttr(kDeleteInFuturePassAttr))
     return {};
 
   Operation *next = filterConst->getNextNode();
