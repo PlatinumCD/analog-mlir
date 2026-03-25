@@ -21,12 +21,15 @@ constexpr StringLiteral kForwardFnName = "forward";
 constexpr StringLiteral kDispatchLayer2DFnName = "analog_dispatch_layer_2d";
 constexpr StringLiteral kDispatchLayer3DFnName = "analog_dispatch_layer_3d";
 constexpr StringLiteral kDispatchLayer4DFnName = "analog_dispatch_layer_4d";
+constexpr StringLiteral kDispatchLayer5DFnName = "analog_dispatch_layer_5d";
 constexpr StringLiteral kRunLayer2DFnName = "analog_run_layer_2d";
 constexpr StringLiteral kRunLayer3DFnName = "analog_run_layer_3d";
 constexpr StringLiteral kRunLayer4DFnName = "analog_run_layer_4d";
+constexpr StringLiteral kRunLayer5DFnName = "analog_run_layer_5d";
 constexpr StringLiteral kWaitLayers2DFnName = "analog_wait_layers_2d";
 constexpr StringLiteral kWaitLayers3DFnName = "analog_wait_layers_3d";
 constexpr StringLiteral kWaitLayers4DFnName = "analog_wait_layers_4d";
+constexpr StringLiteral kWaitLayers5DFnName = "analog_wait_layers_5d";
 constexpr StringLiteral kInvokeLayerPrefix = "analog_invoke_layer_";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
 constexpr StringLiteral kShimRequiredAttr = "analog-shim-required";
@@ -108,12 +111,15 @@ static bool isRuntimeDispatchCallee(StringRef calleeName) {
   return calleeName == kDispatchLayer2DFnName ||
          calleeName == kDispatchLayer3DFnName ||
          calleeName == kDispatchLayer4DFnName ||
+         calleeName == kDispatchLayer5DFnName ||
          calleeName == kRunLayer2DFnName ||
          calleeName == kRunLayer3DFnName ||
          calleeName == kRunLayer4DFnName ||
+         calleeName == kRunLayer5DFnName ||
          calleeName == kWaitLayers2DFnName ||
          calleeName == kWaitLayers3DFnName ||
-         calleeName == kWaitLayers4DFnName;
+         calleeName == kWaitLayers4DFnName ||
+         calleeName == kWaitLayers5DFnName;
 }
 
 
@@ -223,6 +229,9 @@ getRuntimeHookNamesForRank(unsigned rank) {
   case 4:
     return std::make_pair(StringRef(kDispatchLayer4DFnName),
                           StringRef(kWaitLayers4DFnName));
+  case 5:
+    return std::make_pair(StringRef(kDispatchLayer5DFnName),
+                          StringRef(kWaitLayers5DFnName));
   default:
     return failure();
   }
@@ -238,6 +247,8 @@ static FailureOr<StringRef> getDispatcherNameForRank(unsigned rank) {
     return StringRef(kRunLayer3DFnName);
   case 4:
     return StringRef(kRunLayer4DFnName);
+  case 5:
+    return StringRef(kRunLayer5DFnName);
   default:
     return failure();
   }
@@ -481,6 +492,7 @@ void DispatchLayersPass::runOnOperation() {
   SmallVector<LayerCallInfo> layers2D;
   SmallVector<LayerCallInfo> layers3D;
   SmallVector<LayerCallInfo> layers4D;
+  SmallVector<LayerCallInfo> layers5D;
   for (LayerCallInfo &info : layers) {
     switch (info.inputTy.getRank()) {
     case 2:
@@ -491,6 +503,9 @@ void DispatchLayersPass::runOnOperation() {
       break;
     case 4:
       layers4D.push_back(info);
+      break;
+    case 5:
+      layers5D.push_back(info);
       break;
     default:
       info.call.emitError("unsupported tensor rank for layer dispatcher ABI");
@@ -532,7 +547,8 @@ void DispatchLayersPass::runOnOperation() {
 
   if (failed(processGroup(MutableArrayRef<LayerCallInfo>(layers2D))) ||
       failed(processGroup(MutableArrayRef<LayerCallInfo>(layers3D))) ||
-      failed(processGroup(MutableArrayRef<LayerCallInfo>(layers4D)))) {
+      failed(processGroup(MutableArrayRef<LayerCallInfo>(layers4D))) ||
+      failed(processGroup(MutableArrayRef<LayerCallInfo>(layers5D)))) {
     signalPassFailure();
     return;
   }

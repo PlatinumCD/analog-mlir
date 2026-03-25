@@ -33,6 +33,7 @@ constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initializatio
 constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
 constexpr StringLiteral kConv1DRoutineAttr = "analog-conv1d-routine";
 constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
+constexpr StringLiteral kConv3DRoutineAttr = "analog-conv3d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
 constexpr StringLiteral kOutputChannelAssemblyAttr = "analog.output_channel_assembly";
@@ -42,8 +43,10 @@ constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initializat
 constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
 constexpr StringLiteral kConv1DRoutinePrefix = "analog_conv1d_routine_";
 constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
+constexpr StringLiteral kConv3DRoutinePrefix = "analog_conv3d_routine_";
 constexpr StringLiteral kRewrittenConv1DOutputAttr = "analog.rewritten_conv1d_output";
 constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
+constexpr StringLiteral kRewrittenConv3DOutputAttr = "analog.rewritten_conv3d_output";
 
 
 // Walks up the parent chain until it finds the top-level operation
@@ -81,7 +84,7 @@ static bool isAbsorbableTopLevelSetupOp(Operation *op) {
 
 
 // Returns whether the op is a top-level conv assembly loop that builds a
-// rank-4 tensor result, including the degenerate 1x1 spatial case.
+// rank-4 or rank-5 tensor result, including degenerate spatial cases.
 static bool isTopLevelConvAssembly(Operation *op) {
   if (!op || !op->hasAttr(kOutputChannelAssemblyAttr))
     return false;
@@ -91,7 +94,7 @@ static bool isTopLevelConvAssembly(Operation *op) {
     return false;
 
   auto resultTy = dyn_cast<RankedTensorType>(forOp.getResult(0).getType());
-  return resultTy && resultTy.getRank() == 4;
+  return resultTy && (resultTy.getRank() == 4 || resultTy.getRank() == 5);
 }
 
 
@@ -372,6 +375,23 @@ static void collectLayerRoutineChains(func::FuncOp func,
         seenTopLevelOwners.insert(segmentOp);
       layerRoutineChains.push_back(
           {std::move(segment), StringRef(kConv2DRoutineAttr)});
+    }
+  });
+
+  func.walk([&](Operation *op) {
+    if (!op->hasAttr(kRewrittenConv3DOutputAttr))
+      return;
+
+    Operation *topLevelOwner = findTopLevelOwner(op);
+    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+      return;
+
+    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    if (!segment.empty()) {
+      for (Operation *segmentOp : segment)
+        seenTopLevelOwners.insert(segmentOp);
+      layerRoutineChains.push_back(
+          {std::move(segment), StringRef(kConv3DRoutineAttr)});
     }
   });
 
@@ -730,7 +750,8 @@ static bool isOutlinedHelperFunction(func::FuncOp func) {
   return name.starts_with(kMatrixInitializationPrefix) ||
          name.starts_with(kLinearRoutinePrefix) ||
          name.starts_with(kConv1DRoutinePrefix) ||
-         name.starts_with(kConv2DRoutinePrefix);
+         name.starts_with(kConv2DRoutinePrefix) ||
+         name.starts_with(kConv3DRoutinePrefix);
 }
 
 
@@ -1080,6 +1101,8 @@ static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
                                            kConv1DRoutinePrefix},
            std::pair<StringRef, StringRef>{kConv2DRoutineAttr,
                                            kConv2DRoutinePrefix},
+           std::pair<StringRef, StringRef>{kConv3DRoutineAttr,
+                                           kConv3DRoutinePrefix},
        }) {
     SmallVector<scf::ExecuteRegionOp> execs =
         collectTaggedExecuteRegions(forward, tag);

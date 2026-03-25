@@ -3,6 +3,7 @@ add_mlir_library(MLIRAnalogTransforms
   PrepareConv2DToMatmul.cpp
   RewriteConv1DToMatmul.cpp
   RewriteConv2DToMatmul.cpp
+  RewriteConv3DToMatmul.cpp
   MaterializeMatrixFromTensor.cpp
   MaterializeVectorFromTensor.cpp
   IsolateLayers.cpp
