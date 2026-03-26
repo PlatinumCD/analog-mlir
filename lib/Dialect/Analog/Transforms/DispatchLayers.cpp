@@ -153,10 +153,6 @@ analyzeLayerCall(func::CallOp call) {
     call.emitError("expected tensor operand/result types on layer-id call");
     return failure();
   }
-  if (inputTy.getRank() != resultTy.getRank()) {
-    call.emitError("expected matching tensor ranks for layer dispatcher ABI");
-    return failure();
-  }
   if (inputTy.getElementType() != resultTy.getElementType()) {
     call.emitError("expected matching element type for layer dispatcher ABI");
     return failure();
@@ -218,8 +214,12 @@ computeUnifiedDispatcherTypes(MutableArrayRef<LayerCallInfo> layers) {
 // Returns the rank-specific dispatch and wait hook names for the shared
 // runtime ABI and rejects unsupported tensor ranks.
 static FailureOr<std::pair<StringRef, StringRef>>
-getRuntimeHookNamesForRank(unsigned rank) {
-  switch (rank) {
+getRuntimeHookNamesForTypes(RankedTensorType dynInputTy,
+                            RankedTensorType dynResultTy) {
+  unsigned inputRank = dynInputTy.getRank();
+  if (inputRank != dynResultTy.getRank())
+    return failure();
+  switch (inputRank) {
   case 2:
     return std::make_pair(StringRef(kDispatchLayer2DFnName),
                           StringRef(kWaitLayers2DFnName));
@@ -239,8 +239,12 @@ getRuntimeHookNamesForRank(unsigned rank) {
 
 
 // Returns the generated dispatcher function name for the given tensor rank.
-static FailureOr<StringRef> getDispatcherNameForRank(unsigned rank) {
-  switch (rank) {
+static FailureOr<StringRef> getDispatcherNameForTypes(RankedTensorType dynInputTy,
+                                                      RankedTensorType dynResultTy) {
+  unsigned inputRank = dynInputTy.getRank();
+  if (inputRank != dynResultTy.getRank())
+    return failure();
+  switch (inputRank) {
   case 2:
     return StringRef(kRunLayer2DFnName);
   case 3:
@@ -263,7 +267,7 @@ getOrCreateRuntimeHooks(ModuleOp module, RankedTensorType dynInputTy,
   OpBuilder moduleBuilder(module.getBodyRegion());
   auto i32Ty = moduleBuilder.getI32Type();
   FailureOr<std::pair<StringRef, StringRef>> maybeNames =
-      getRuntimeHookNamesForRank(dynInputTy.getRank());
+      getRuntimeHookNamesForTypes(dynInputTy, dynResultTy);
   if (failed(maybeNames))
     return failure();
 
@@ -389,7 +393,19 @@ static void emitDispatcherDefaultBlock(Block *defaultBlock, Block *exitBlock,
 
   Value fallback = inputArg;
   if (inputArg.getType() != dynResultTy) {
-    fallback = defaultBuilder.create<tensor::CastOp>(loc, dynResultTy, inputArg);
+    auto inputTy = cast<RankedTensorType>(inputArg.getType());
+    if (inputTy.getRank() == dynResultTy.getRank()) {
+      fallback =
+          defaultBuilder.create<tensor::CastOp>(loc, dynResultTy, inputArg);
+    } else {
+      SmallVector<Value> zeroDims;
+      zeroDims.reserve(dynResultTy.getRank());
+      for (int64_t i = 0; i < dynResultTy.getRank(); ++i) {
+        zeroDims.push_back(defaultBuilder.create<arith::ConstantIndexOp>(loc, 0));
+      }
+      fallback = defaultBuilder.create<tensor::EmptyOp>(
+          loc, dynResultTy.getShape(), dynResultTy.getElementType(), zeroDims);
+    }
   }
   defaultBuilder.create<cf::BranchOp>(loc, exitBlock, ValueRange{fallback});
 }
@@ -533,7 +549,7 @@ void DispatchLayersPass::runOnOperation() {
     }
 
     FailureOr<StringRef> maybeDispatcherName =
-        getDispatcherNameForRank(abi.dynInputTy.getRank());
+        getDispatcherNameForTypes(abi.dynInputTy, abi.dynResultTy);
     if (failed(maybeDispatcherName)) {
       forward.emitError("unsupported tensor rank for layer dispatcher");
       return failure();

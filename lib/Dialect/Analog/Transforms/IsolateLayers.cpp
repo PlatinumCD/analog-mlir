@@ -33,6 +33,7 @@ constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initializatio
 constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
 constexpr StringLiteral kConv1DRoutineAttr = "analog-conv1d-routine";
 constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
+constexpr StringLiteral kGroupedConv2DRoutineAttr = "analog-grouped-conv2d-routine";
 constexpr StringLiteral kConv3DRoutineAttr = "analog-conv3d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
@@ -43,9 +44,11 @@ constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initializat
 constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
 constexpr StringLiteral kConv1DRoutinePrefix = "analog_conv1d_routine_";
 constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
+constexpr StringLiteral kGroupedConv2DRoutinePrefix = "analog_grouped_conv2d_routine_";
 constexpr StringLiteral kConv3DRoutinePrefix = "analog_conv3d_routine_";
 constexpr StringLiteral kRewrittenConv1DOutputAttr = "analog.rewritten_conv1d_output";
 constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
+constexpr StringLiteral kRewrittenGroupedConv2DOutputAttr = "analog.rewritten_grouped_conv2d_output";
 constexpr StringLiteral kRewrittenConv3DOutputAttr = "analog.rewritten_conv3d_output";
 
 
@@ -78,8 +81,19 @@ static bool allUsesStayWithinTopLevelOwners(
 // Returns whether the top-level op is local setup that should move with a
 // rewritten conv rather than become a separate layer dependency.
 static bool isAbsorbableTopLevelSetupOp(Operation *op) {
-  return isa<tensor::EmptyOp, tensor::ExpandShapeOp, linalg::FillOp,
-             linalg::BroadcastOp>(op);
+  if (isa<tensor::EmptyOp, linalg::FillOp, linalg::BroadcastOp>(op))
+    return true;
+
+  auto expandOp = dyn_cast<tensor::ExpandShapeOp>(op);
+  if (!expandOp)
+    return false;
+
+  auto sourceTy = dyn_cast<RankedTensorType>(expandOp.getSrc().getType());
+  auto resultTy = dyn_cast<RankedTensorType>(expandOp.getResult().getType());
+  if (sourceTy && resultTy && sourceTy.getRank() == 4 && resultTy.getRank() == 5)
+    return false;
+
+  return true;
 }
 
 
@@ -191,6 +205,7 @@ static OpChain buildClosedTopLevelSegment(Operation *anchor) {
   std::reverse(segment.begin(), segment.end());
   return segment;
 }
+
 
 
 // Collects every operation in the segment, including nested ops, so
@@ -379,6 +394,23 @@ static void collectLayerRoutineChains(func::FuncOp func,
   });
 
   func.walk([&](Operation *op) {
+    if (!op->hasAttr(kRewrittenGroupedConv2DOutputAttr))
+      return;
+
+    Operation *topLevelOwner = findTopLevelOwner(op);
+    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+      return;
+
+    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+    if (!segment.empty()) {
+      for (Operation *segmentOp : segment)
+        seenTopLevelOwners.insert(segmentOp);
+      layerRoutineChains.push_back(
+          {std::move(segment), StringRef(kGroupedConv2DRoutineAttr)});
+    }
+  });
+
+  func.walk([&](Operation *op) {
     if (!op->hasAttr(kRewrittenConv3DOutputAttr))
       return;
 
@@ -421,7 +453,8 @@ static void collectLayerRoutineChains(func::FuncOp func,
     Operation *startTop = findTopLevelOwner(op.getOperation());
     if (!startTop || !startTop->getBlock())
       return;
-    if (startTop->hasAttr(kRewrittenConv2DOutputAttr))
+    if (startTop->hasAttr(kRewrittenConv2DOutputAttr) ||
+        startTop->hasAttr(kRewrittenGroupedConv2DOutputAttr))
       return;
     if (!seenTopLevelOwners.insert(startTop).second)
       return;
@@ -751,6 +784,7 @@ static bool isOutlinedHelperFunction(func::FuncOp func) {
          name.starts_with(kLinearRoutinePrefix) ||
          name.starts_with(kConv1DRoutinePrefix) ||
          name.starts_with(kConv2DRoutinePrefix) ||
+         name.starts_with(kGroupedConv2DRoutinePrefix) ||
          name.starts_with(kConv3DRoutinePrefix);
 }
 
@@ -1101,6 +1135,8 @@ static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
                                            kConv1DRoutinePrefix},
            std::pair<StringRef, StringRef>{kConv2DRoutineAttr,
                                            kConv2DRoutinePrefix},
+           std::pair<StringRef, StringRef>{kGroupedConv2DRoutineAttr,
+                                           kGroupedConv2DRoutinePrefix},
            std::pair<StringRef, StringRef>{kConv3DRoutineAttr,
                                            kConv3DRoutinePrefix},
        }) {

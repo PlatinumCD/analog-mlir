@@ -8,6 +8,7 @@
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RewriteGroupedConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv3DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
@@ -33,11 +34,12 @@ struct RewriteConvToMatmulPipelineOptions
 void mlir::analog::registerRewriteConvToMatmulPipeline() {
   PassPipelineRegistration<RewriteConvToMatmulPipelineOptions>(
       "analog-rewrite-conv-to-matmul",
-      "Rewrite supported conv3d, conv2d, and conv1d ops into a matmul-oriented form",
+      "Rewrite supported conv3d, conv2d, grouped conv2d, and conv1d ops into a matmul-oriented form",
       [](OpPassManager &pm,
          const RewriteConvToMatmulPipelineOptions &) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
         funcPM.addPass(createRewriteConv2DToMatmulPass());
+        funcPM.addPass(createRewriteGroupedConv2DToMatmulPass());
         funcPM.addPass(createRewriteConv1DToMatmulPass());
         funcPM.addPass(createRewriteConv3DToMatmulPass());
       });

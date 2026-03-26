@@ -2,6 +2,7 @@ add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
   RewriteConv1DToMatmul.cpp
   RewriteConv2DToMatmul.cpp
+  RewriteGroupedConv2DToMatmul.cpp
   RewriteConv3DToMatmul.cpp
   MaterializeMatrixFromTensor.cpp
   MaterializeVectorFromTensor.cpp
