@@ -1,4 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/Passes.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IdentifyRecurrentPatterns.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNCellForAnalog.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteGroupedConv2DToMatmul.h"
@@ -28,6 +30,8 @@ namespace analog {
 void registerAnalogPasses() {
 
   // Leaf passes ONLY
+  PassRegistration<IdentifyRecurrentPatternsPass>();
+  PassRegistration<PrepareRNNCellForAnalogPass>();
   PassRegistration<RewriteConv1DToMatmulPass>();
   PassRegistration<RewriteConv2DToMatmulPass>();
   PassRegistration<RewriteGroupedConv2DToMatmulPass>();

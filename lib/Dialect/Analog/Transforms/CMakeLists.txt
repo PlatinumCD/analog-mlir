@@ -1,5 +1,7 @@
 add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
+  IdentifyRecurrentPatterns.cpp
+  PrepareRNNCellForAnalog.cpp
   RewriteConv1DToMatmul.cpp
   RewriteConv2DToMatmul.cpp
   RewriteGroupedConv2DToMatmul.cpp
