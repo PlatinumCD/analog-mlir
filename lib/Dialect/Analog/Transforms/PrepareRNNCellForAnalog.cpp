@@ -18,16 +18,12 @@ namespace mlir {
 namespace analog {
 namespace {
 
-static constexpr llvm::StringLiteral kRecurrentPatternAttr =
-    "analog.recurrent_pattern";
-static constexpr llvm::StringLiteral kRecurrentInputSizeAttr =
+constexpr StringLiteral kRecurrentPatternAttr = "analog.recurrent_pattern";
+constexpr StringLiteral kRecurrentInputSizeAttr =
     "analog.recurrent_input_size";
-static constexpr llvm::StringLiteral kRecurrentHiddenSizeAttr =
+constexpr StringLiteral kRecurrentHiddenSizeAttr =
     "analog.recurrent_hidden_size";
-static constexpr llvm::StringLiteral kPreparedForAnalogAttr =
-    "analog.prepared_for_analog";
-static constexpr llvm::StringLiteral kRecurrentAffineFusedAttr =
-    "analog.recurrent_affine_fused";
+constexpr StringLiteral kPreparedForAnalogAttr = "analog.prepared_for_analog";
 
 struct MatchedRNNCell {
   scf::ExecuteRegionOp executeRegion;
@@ -46,6 +42,11 @@ struct MatchedRNNCell {
   RankedTensorType hiddenBiasTy;
 };
 
+//===----------------------------------------------------------------------===//
+// Generic Match and Rewrite Helpers
+//===----------------------------------------------------------------------===//
+
+// Returns whether the generic is a simple elementwise floating-point add.
 static bool isPointwiseAddGeneric(linalg::GenericOp generic) {
   if (!generic || generic.getNumDpsInputs() != 2 || generic.getNumDpsInits() != 1)
     return false;
@@ -62,6 +63,7 @@ static bool isPointwiseAddGeneric(linalg::GenericOp generic) {
          yieldOp.getValues().front() == addOp.getResult();
 }
 
+// Returns whether the generic is a simple elementwise tanh.
 static bool isTanhGeneric(linalg::GenericOp generic) {
   if (!generic || generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
     return false;
@@ -78,6 +80,7 @@ static bool isTanhGeneric(linalg::GenericOp generic) {
          yieldOp.getValues().front() == tanhOp.getResult();
 }
 
+// Returns the rank-2 constant feeding a canonical weight transpose.
 static arith::ConstantOp getRank2ConstantThroughTranspose(Value value) {
   auto transpose = value.getDefiningOp<linalg::TransposeOp>();
   if (!transpose)
@@ -88,6 +91,7 @@ static arith::ConstantOp getRank2ConstantThroughTranspose(Value value) {
   return transpose.getInput().getDefiningOp<arith::ConstantOp>();
 }
 
+// Extracts floating-point payloads from dense or resource-backed constants.
 static FailureOr<SmallVector<float>> extractFloatElements(arith::ConstantOp op) {
   if (!op)
     return failure();
@@ -109,6 +113,7 @@ static FailureOr<SmallVector<float>> extractFloatElements(arith::ConstantOp op) 
   return failure();
 }
 
+// Builds a rank-2 + rank-1 pointwise add used for the final bias add.
 static Value buildPointwiseAdd(OpBuilder &builder, Location loc, Value lhs,
                                Value rhs, RankedTensorType resultTy) {
   auto empty = builder.create<tensor::EmptyOp>(loc, resultTy.getShape(),
@@ -130,6 +135,7 @@ static Value buildPointwiseAdd(OpBuilder &builder, Location loc, Value lhs,
   return add.getResult(0);
 }
 
+// Builds the final tanh over the fused affine result.
 static Value buildTanh(OpBuilder &builder, Location loc, Value input,
                        RankedTensorType resultTy) {
   auto empty = builder.create<tensor::EmptyOp>(loc, resultTy.getShape(),
@@ -147,6 +153,13 @@ static Value buildTanh(OpBuilder &builder, Location loc, Value input,
   return tanh.getResult(0);
 }
 
+//===----------------------------------------------------------------------===//
+// RNN Cell Matching
+//===----------------------------------------------------------------------===//
+
+// Matches the isolated single-step RNN cell boundary emitted by
+// IdentifyRecurrentPatternsPass and records the key operands required to fuse
+// the affine branches.
 static FailureOr<MatchedRNNCell> matchRNNCellBlock(scf::ExecuteRegionOp executeRegion) {
   if (!executeRegion->hasAttr(kRecurrentPatternAttr) ||
       executeRegion->getAttrOfType<StringAttr>(kRecurrentPatternAttr).getValue() !=
@@ -305,6 +318,12 @@ static FailureOr<MatchedRNNCell> matchRNNCellBlock(scf::ExecuteRegionOp executeR
   return match;
 }
 
+//===----------------------------------------------------------------------===//
+// Resource Synthesis
+//===----------------------------------------------------------------------===//
+
+// Creates a new top-level fused bias resource by summing the original input and
+// recurrent biases elementwise.
 static FailureOr<arith::ConstantOp> createFusedBiasResourceConstant(
     OpBuilder &builder, Location loc, MatchedRNNCell &match,
     StringRef resourceName) {
@@ -329,6 +348,8 @@ static FailureOr<arith::ConstantOp> createFusedBiasResourceConstant(
                                            cast<TypedAttr>(fusedAttr));
 }
 
+// Creates a new top-level fused weight resource representing the concatenation
+// of `W_ih` and `W_hh` along the input-feature dimension.
 static FailureOr<arith::ConstantOp> createFusedWeightResourceConstant(
     OpBuilder &builder, Location loc, MatchedRNNCell &match,
     StringRef resourceName) {
@@ -362,11 +383,19 @@ static FailureOr<arith::ConstantOp> createFusedWeightResourceConstant(
                                            cast<TypedAttr>(fusedAttr));
 }
 
+// Removes dead source constants once the fused resources have replaced them.
 static void eraseIfDead(arith::ConstantOp op) {
   if (op && op->use_empty())
     op.erase();
 }
 
+//===----------------------------------------------------------------------===//
+// RNN Cell Rewrite
+//===----------------------------------------------------------------------===//
+
+// Rewrites the isolated RNN cell into a single fused affine path:
+//   [x_t | h_{t-1}] * W_fused^T + b_fused
+// followed by tanh, then removes the execute_region wrapper.
 static LogicalResult rewriteRNNCell(MatchedRNNCell &match,
                                     unsigned &fusedBiasCounter,
                                     unsigned &fusedWeightCounter) {
@@ -401,12 +430,13 @@ static LogicalResult rewriteRNNCell(MatchedRNNCell &match,
       loc, builder.getF32FloatAttr(0.0f));
   auto matmulInit = builder.create<tensor::EmptyOp>(
       loc, match.outputTy.getShape(), match.outputTy.getElementType());
-  auto filledInit =
-      builder.create<linalg::FillOp>(loc, ValueRange{zeroValue},
-                                     ValueRange{matmulInit})
-          .getResult(0);
+  auto filledInit = builder
+                        .create<linalg::FillOp>(loc, ValueRange{zeroValue},
+                                                ValueRange{matmulInit})
+                        .getResult(0);
   auto matmul = builder.create<linalg::MatmulOp>(
-      loc, TypeRange{match.outputTy}, ValueRange{concatInput, transposedWeight.getResult()[0]},
+      loc, TypeRange{match.outputTy},
+      ValueRange{concatInput, transposedWeight.getResult()[0]},
       ValueRange{filledInit});
 
   Value biasAdded =

@@ -1,7 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/IdentifyRecurrentPatterns.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -20,16 +19,14 @@ namespace mlir {
 namespace analog {
 namespace {
 
-static constexpr llvm::StringLiteral kRecurrentPatternAttr =
-    "analog.recurrent_pattern";
-static constexpr llvm::StringLiteral kRecurrentActivationAttr =
+constexpr StringLiteral kRecurrentPatternAttr = "analog.recurrent_pattern";
+constexpr StringLiteral kRecurrentActivationAttr =
     "analog.recurrent_activation";
-static constexpr llvm::StringLiteral kRecurrentInputSizeAttr =
+constexpr StringLiteral kRecurrentInputSizeAttr =
     "analog.recurrent_input_size";
-static constexpr llvm::StringLiteral kRecurrentHiddenSizeAttr =
+constexpr StringLiteral kRecurrentHiddenSizeAttr =
     "analog.recurrent_hidden_size";
-static constexpr llvm::StringLiteral kRecurrentStepsAttr =
-    "analog.recurrent_steps";
+constexpr StringLiteral kRecurrentStepsAttr = "analog.recurrent_steps";
 
 struct RecurrentPatternMatch {
   StringRef kind;
@@ -51,6 +48,11 @@ public:
                      SmallVectorImpl<RecurrentPatternMatch> &matches) const = 0;
 };
 
+//===----------------------------------------------------------------------===//
+// Generic Match Helpers
+//===----------------------------------------------------------------------===//
+
+// Returns whether the generic is a simple elementwise floating-point add.
 static bool isPointwiseAddGeneric(linalg::GenericOp generic) {
   if (!generic || generic.getNumDpsInputs() != 2 || generic.getNumDpsInits() != 1)
     return false;
@@ -67,6 +69,7 @@ static bool isPointwiseAddGeneric(linalg::GenericOp generic) {
          yieldOp.getValues().front() == addOp.getResult();
 }
 
+// Returns whether the generic is a simple elementwise tanh.
 static bool isTanhGeneric(linalg::GenericOp generic) {
   if (!generic || generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
     return false;
@@ -83,6 +86,7 @@ static bool isTanhGeneric(linalg::GenericOp generic) {
          yieldOp.getValues().front() == tanhOp.getResult();
 }
 
+// Returns the constant feeding a canonical weight transpose.
 static arith::ConstantOp getRank2ConstantThroughTranspose(Value value) {
   auto transpose = value.getDefiningOp<linalg::TransposeOp>();
   if (!transpose)
@@ -93,15 +97,19 @@ static arith::ConstantOp getRank2ConstantThroughTranspose(Value value) {
   return transpose.getInput().getDefiningOp<arith::ConstantOp>();
 }
 
+// Returns whether any operation in `ops` was already claimed by a previous
+// recurrent-pattern match.
 static bool isClaimed(ArrayRef<Operation *> ops, const DenseSet<Operation *> &claimed) {
   return llvm::any_of(ops, [&](Operation *op) { return claimed.contains(op); });
 }
 
+// Marks each operation as claimed so later matchers skip overlapping matches.
 static void claimMatchedOps(ArrayRef<Operation *> ops, DenseSet<Operation *> &claimed) {
   for (Operation *op : ops)
     claimed.insert(op);
 }
 
+// Walks up the parent chain to the operation directly owned by the function.
 static Operation *findTopLevelOwner(Operation *op) {
   Operation *top = op;
   while (top && !isa<func::FuncOp>(top->getParentOp()))
@@ -109,6 +117,7 @@ static Operation *findTopLevelOwner(Operation *op) {
   return top;
 }
 
+// Collects the top-level dependency segment needed to compute `rootValue`.
 static SmallVector<Operation *> collectTopLevelDependencySegment(Value rootValue) {
   DenseSet<Operation *> owners;
   SmallVector<Value> worklist = {rootValue};
@@ -142,10 +151,16 @@ static SmallVector<Operation *> collectTopLevelDependencySegment(Value rootValue
   return segment;
 }
 
+// Moves a contiguous top-level segment into the target block while preserving
+// the original operation order.
 static void moveSegmentIntoBlock(ArrayRef<Operation *> segment, Block *targetBlock) {
   for (Operation *op : segment)
     op->moveBefore(targetBlock, targetBlock->end());
 }
+
+//===----------------------------------------------------------------------===//
+// RNN Cell Matcher
+//===----------------------------------------------------------------------===//
 
 class RNNCellMatcher final : public RecurrentPatternMatcher {
 public:
@@ -255,6 +270,8 @@ public:
   }
 };
 
+// Strips simple view-like reshapes and slices so recurrent edges can be matched
+// through canonicalized sequence plumbing.
 static Value stripSimpleViewLike(Value value) {
   while (true) {
     if (auto collapse = value.getDefiningOp<tensor::CollapseShapeOp>()) {
@@ -274,24 +291,33 @@ static Value stripSimpleViewLike(Value value) {
   return value;
 }
 
+//===----------------------------------------------------------------------===//
+// RNN Sequence Matcher
+//===----------------------------------------------------------------------===//
+
 class RNNSequenceMatcher final : public RecurrentPatternMatcher {
 public:
   void match(func::FuncOp func, DenseSet<Operation *> &claimedOps,
              SmallVectorImpl<RecurrentPatternMatch> &matches) const override {
     if (func.getNumArguments() != 2)
       return;
-    auto sequenceInputTy = dyn_cast<RankedTensorType>(func.getArgument(0).getType());
-    auto initialHiddenTy = dyn_cast<RankedTensorType>(func.getArgument(1).getType());
-    if (!sequenceInputTy || !initialHiddenTy || !sequenceInputTy.hasStaticShape() ||
-        !initialHiddenTy.hasStaticShape() || sequenceInputTy.getRank() != 3 ||
-        initialHiddenTy.getRank() != 3 || sequenceInputTy.getElementType() != initialHiddenTy.getElementType() ||
+    auto sequenceInputTy =
+        dyn_cast<RankedTensorType>(func.getArgument(0).getType());
+    auto initialHiddenTy =
+        dyn_cast<RankedTensorType>(func.getArgument(1).getType());
+    if (!sequenceInputTy || !initialHiddenTy ||
+        !sequenceInputTy.hasStaticShape() || !initialHiddenTy.hasStaticShape() ||
+        sequenceInputTy.getRank() != 3 || initialHiddenTy.getRank() != 3 ||
+        sequenceInputTy.getElementType() !=
+            initialHiddenTy.getElementType() ||
         !sequenceInputTy.getElementType().isF32())
       return;
 
     SmallVector<linalg::GenericOp> tanhOps;
     func.walk([&](linalg::GenericOp generic) {
       if (isTanhGeneric(generic)) {
-        auto resultTy = dyn_cast<RankedTensorType>(generic.getResult(0).getType());
+        auto resultTy =
+            dyn_cast<RankedTensorType>(generic.getResult(0).getType());
         if (resultTy && resultTy.hasStaticShape() && resultTy.getRank() == 3)
           tanhOps.push_back(generic);
       }
@@ -333,14 +359,17 @@ public:
       RecurrentPatternMatch seq;
       seq.kind = "rnn";
       seq.anchor = func.getOperation();
-      if (auto returnOp = dyn_cast<func::ReturnOp>(&func.getBody().front().back())) {
+      if (auto returnOp =
+              dyn_cast<func::ReturnOp>(&func.getBody().front().back())) {
         if (returnOp.getNumOperands() == 1) {
           seq.result = returnOp.getOperand(0);
           seq.matchedOps = collectTopLevelDependencySegment(returnOp.getOperand(0));
         }
       }
-      if (!seq.result || seq.matchedOps.empty() || isClaimed(seq.matchedOps, claimedOps))
+      if (!seq.result || seq.matchedOps.empty() ||
+          isClaimed(seq.matchedOps, claimedOps))
         continue;
+
       seq.steps = static_cast<int64_t>(tanhOps.size());
       seq.hiddenSize = initialHiddenTy.getShape()[2];
       seq.inputSize = sequenceInputTy.getShape()[2];
@@ -352,6 +381,7 @@ public:
   }
 };
 
+// Builds the recurrent-pattern registry in descending match specificity.
 static SmallVector<std::unique_ptr<RecurrentPatternMatcher>>
 buildRecurrentPatternRegistry() {
   SmallVector<std::unique_ptr<RecurrentPatternMatcher>> matchers;
@@ -360,6 +390,8 @@ buildRecurrentPatternRegistry() {
   return matchers;
 }
 
+// Annotates the newly created isolation block with the recurrent metadata
+// produced by the matcher.
 static void annotateOperation(Operation *op, RecurrentPatternMatch &match) {
   if (!op)
     return;
@@ -378,6 +410,8 @@ static void annotateOperation(Operation *op, RecurrentPatternMatch &match) {
                 IntegerAttr::get(IntegerType::get(ctx, 64), match.steps));
 }
 
+// Wraps the matched top-level segment in an execute_region so recurrent
+// boundaries remain visible in the IR for later passes and debugging.
 static void wrapMatchInExecuteRegion(RecurrentPatternMatch &match) {
   if (match.matchedOps.empty() || !match.result)
     return;
@@ -417,7 +451,6 @@ llvm::StringRef IdentifyRecurrentPatternsPass::getDescription() const {
 void IdentifyRecurrentPatternsPass::getDependentDialects(
     DialectRegistry &registry) const {
   registry.insert<arith::ArithDialect>();
-  registry.insert<cf::ControlFlowDialect>();
   registry.insert<linalg::LinalgDialect>();
   registry.insert<math::MathDialect>();
   registry.insert<scf::SCFDialect>();

@@ -7,6 +7,7 @@ namespace mlir {
 namespace analog {
 
 void registerRewriteConvToMatmulPipeline();
+void registerRewriteRecurrentToMatmulPipeline();
 void registerMaterializeAndPlacePipeline();
 void registerExecuteAndReplacePipeline();
 void registerDispatchRuntimePipeline();

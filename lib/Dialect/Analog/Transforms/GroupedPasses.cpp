@@ -2,10 +2,13 @@
 
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IdentifyRecurrentPatterns.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionMatrix.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
 #include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNForAnalog.h"
+#include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNCellForAnalog.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteGroupedConv2DToMatmul.h"
@@ -42,6 +45,26 @@ void mlir::analog::registerRewriteConvToMatmulPipeline() {
         funcPM.addPass(createRewriteGroupedConv2DToMatmulPass());
         funcPM.addPass(createRewriteConv1DToMatmulPass());
         funcPM.addPass(createRewriteConv3DToMatmulPass());
+      });
+}
+
+//===----------------------------------------------------------------------===//
+// analog-rewrite-recurrent-to-matmul
+//===----------------------------------------------------------------------===//
+
+struct RewriteRecurrentToMatmulPipelineOptions
+    : public PassPipelineOptions<RewriteRecurrentToMatmulPipelineOptions> {};
+
+void mlir::analog::registerRewriteRecurrentToMatmulPipeline() {
+  PassPipelineRegistration<RewriteRecurrentToMatmulPipelineOptions>(
+      "analog-rewrite-recurrent-to-matmul",
+      "Identify supported recurrent patterns and prepare RNN cells for matmul-oriented lowering",
+      [](OpPassManager &pm,
+         const RewriteRecurrentToMatmulPipelineOptions &) {
+        OpPassManager &funcPM = pm.nest<func::FuncOp>();
+        funcPM.addPass(createIdentifyRecurrentPatternsPass());
+        funcPM.addPass(createPrepareRNNForAnalogPass());
+        funcPM.addPass(createPrepareRNNCellForAnalogPass());
       });
 }
 
