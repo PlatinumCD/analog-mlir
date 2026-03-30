@@ -1,4 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNCellForAnalog.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TensorConstantUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -18,12 +20,14 @@ namespace mlir {
 namespace analog {
 namespace {
 
-constexpr StringLiteral kRecurrentPatternAttr = "analog.recurrent_pattern";
-constexpr StringLiteral kRecurrentInputSizeAttr =
-    "analog.recurrent_input_size";
-constexpr StringLiteral kRecurrentHiddenSizeAttr =
-    "analog.recurrent_hidden_size";
-constexpr StringLiteral kPreparedForAnalogAttr = "analog.prepared_for_analog";
+using detail::kPreparedForAnalogAttr;
+using detail::kRecurrentHiddenSizeAttr;
+using detail::kRecurrentInputSizeAttr;
+using detail::kRecurrentPatternAttr;
+using detail::createDenseF32ResourceConstant;
+using detail::eraseIfDead;
+using detail::extractFloatElements;
+using detail::makeNumberedResourceName;
 
 struct MatchedRNNCell {
   scf::ExecuteRegionOp executeRegion;
@@ -89,28 +93,6 @@ static arith::ConstantOp getRank2ConstantThroughTranspose(Value value) {
   if (permutation.size() != 2 || permutation[0] != 1 || permutation[1] != 0)
     return {};
   return transpose.getInput().getDefiningOp<arith::ConstantOp>();
-}
-
-// Extracts floating-point payloads from dense or resource-backed constants.
-static FailureOr<SmallVector<float>> extractFloatElements(arith::ConstantOp op) {
-  if (!op)
-    return failure();
-
-  TypedAttr attr = op.getValue();
-  if (auto denseAttr = dyn_cast<DenseElementsAttr>(attr)) {
-    SmallVector<float> values;
-    values.reserve(denseAttr.getNumElements());
-    for (APFloat value : denseAttr.getValues<APFloat>())
-      values.push_back(value.convertToFloat());
-    return values;
-  }
-
-  if (auto resourceAttr = dyn_cast<DenseF32ResourceElementsAttr>(attr)) {
-    if (std::optional<ArrayRef<float>> values = resourceAttr.tryGetAsArrayRef())
-      return SmallVector<float>(values->begin(), values->end());
-  }
-
-  return failure();
 }
 
 // Builds a rank-2 + rank-1 pointwise add used for the final bias add.
@@ -341,11 +323,8 @@ static FailureOr<arith::ConstantOp> createFusedBiasResourceConstant(
     fusedValues.push_back((*inputBiasValues)[i] + (*hiddenBiasValues)[i]);
 
   auto fusedTy = RankedTensorType::get({hiddenSize}, builder.getF32Type());
-  Attribute fusedAttr = DenseF32ResourceElementsAttr::get(
-      fusedTy, resourceName,
-      HeapAsmResourceBlob::allocateAndCopyInferAlign<float>(fusedValues));
-  return builder.create<arith::ConstantOp>(loc, fusedTy,
-                                           cast<TypedAttr>(fusedAttr));
+  return createDenseF32ResourceConstant(builder, loc, fusedTy, resourceName,
+                                        fusedValues);
 }
 
 // Creates a new top-level fused weight resource representing the concatenation
@@ -376,17 +355,8 @@ static FailureOr<arith::ConstantOp> createFusedWeightResourceConstant(
 
   auto fusedTy = RankedTensorType::get({hiddenSize, inputSize + recurrentSize},
                                        builder.getF32Type());
-  Attribute fusedAttr = DenseF32ResourceElementsAttr::get(
-      fusedTy, resourceName,
-      HeapAsmResourceBlob::allocateAndCopyInferAlign<float>(fusedValues));
-  return builder.create<arith::ConstantOp>(loc, fusedTy,
-                                           cast<TypedAttr>(fusedAttr));
-}
-
-// Removes dead source constants once the fused resources have replaced them.
-static void eraseIfDead(arith::ConstantOp op) {
-  if (op && op->use_empty())
-    op.erase();
+  return createDenseF32ResourceConstant(builder, loc, fusedTy, resourceName,
+                                        fusedValues);
 }
 
 //===----------------------------------------------------------------------===//
@@ -402,9 +372,11 @@ static LogicalResult rewriteRNNCell(MatchedRNNCell &match,
   Location loc = match.executeRegion.getLoc();
   OpBuilder builder(match.executeRegion);
   std::string biasResourceName =
-      "analog_rnn_cell_fused_bias_" + std::to_string(fusedBiasCounter++);
+      makeNumberedResourceName("analog_rnn_cell_fused_bias_",
+                               fusedBiasCounter);
   std::string weightResourceName =
-      "analog_rnn_cell_fused_weight_" + std::to_string(fusedWeightCounter++);
+      makeNumberedResourceName("analog_rnn_cell_fused_weight_",
+                               fusedWeightCounter);
   FailureOr<arith::ConstantOp> fusedBiasConst =
       createFusedBiasResourceConstant(builder, loc, match, biasResourceName);
   FailureOr<arith::ConstantOp> fusedWeightConst =

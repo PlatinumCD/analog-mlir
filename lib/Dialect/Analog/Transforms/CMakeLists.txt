@@ -1,5 +1,10 @@
 add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
+  LayerKinds.cpp
+  OutliningUtils.cpp
+  RegionUtils.cpp
+  SourceTrackingUtils.cpp
+  TensorConstantUtils.cpp
   IdentifyRecurrentPatterns.cpp
   PrepareRNNForAnalog.cpp
   PrepareRNNCellForAnalog.cpp

@@ -27,6 +27,47 @@
 using namespace mlir;
 using namespace mlir::analog;
 
+namespace {
+
+static void populateConvRewritePipeline(OpPassManager &funcPM) {
+  funcPM.addPass(createRewriteConv2DToMatmulPass());
+  funcPM.addPass(createRewriteGroupedConv2DToMatmulPass());
+  funcPM.addPass(createRewriteConv1DToMatmulPass());
+  funcPM.addPass(createRewriteConv3DToMatmulPass());
+}
+
+static void populateRecurrentRewritePipeline(OpPassManager &funcPM) {
+  funcPM.addPass(createIdentifyRecurrentPatternsPass());
+  funcPM.addPass(createPrepareRNNForAnalogPass());
+  funcPM.addPass(createPrepareRNNCellForAnalogPass());
+}
+
+static void populateMaterializeAndPlacePipeline(OpPassManager &funcPM,
+                                                int64_t arrayRows,
+                                                int64_t arrayCols) {
+  funcPM.addPass(createMaterializeMatrixFromTensorPass());
+  funcPM.addPass(createMaterializeVectorFromTensorPass());
+  funcPM.addPass(createPartitionMatrixPass(arrayRows, arrayCols));
+  funcPM.addPass(createPartitionVectorPass(arrayRows, arrayCols));
+  funcPM.addPass(createPlaceMatricesPass());
+  funcPM.addPass(createPlaceVectorsPass());
+}
+
+static void populateExecuteAndReplacePipeline(OpPassManager &funcPM) {
+  funcPM.addPass(createExecuteArrayPass());
+  funcPM.addPass(createReduceResultsPass());
+  funcPM.addPass(createReplaceMatmulPass());
+}
+
+static void populateDispatchRuntimePipeline(OpPassManager &pm) {
+  OpPassManager &funcPM = pm.nest<func::FuncOp>();
+  funcPM.addPass(createIsolateLayersPass());
+  pm.addPass(createDispatchWeightsPass());
+  pm.addPass(createDispatchLayersPass());
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // analog-rewrite-conv-to-matmul
 //===----------------------------------------------------------------------===//
@@ -41,10 +82,7 @@ void mlir::analog::registerRewriteConvToMatmulPipeline() {
       [](OpPassManager &pm,
          const RewriteConvToMatmulPipelineOptions &) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
-        funcPM.addPass(createRewriteConv2DToMatmulPass());
-        funcPM.addPass(createRewriteGroupedConv2DToMatmulPass());
-        funcPM.addPass(createRewriteConv1DToMatmulPass());
-        funcPM.addPass(createRewriteConv3DToMatmulPass());
+        populateConvRewritePipeline(funcPM);
       });
 }
 
@@ -62,9 +100,7 @@ void mlir::analog::registerRewriteRecurrentToMatmulPipeline() {
       [](OpPassManager &pm,
          const RewriteRecurrentToMatmulPipelineOptions &) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
-        funcPM.addPass(createIdentifyRecurrentPatternsPass());
-        funcPM.addPass(createPrepareRNNForAnalogPass());
-        funcPM.addPass(createPrepareRNNCellForAnalogPass());
+        populateRecurrentRewritePipeline(funcPM);
       });
 }
 
@@ -93,14 +129,8 @@ void mlir::analog::registerMaterializeAndPlacePipeline() {
       [](OpPassManager &pm,
          const MaterializeAndPlacePipelineOptions &opts) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
-        funcPM.addPass(createMaterializeMatrixFromTensorPass());
-        funcPM.addPass(createMaterializeVectorFromTensorPass());
-        funcPM.addPass(createPartitionMatrixPass(
-            opts.arrayRows, opts.arrayCols));
-        funcPM.addPass(createPartitionVectorPass(
-            opts.arrayRows, opts.arrayCols));
-        funcPM.addPass(createPlaceMatricesPass());
-        funcPM.addPass(createPlaceVectorsPass());
+        populateMaterializeAndPlacePipeline(funcPM, opts.arrayRows,
+                                            opts.arrayCols);
       });
 }
 
@@ -118,9 +148,7 @@ void mlir::analog::registerExecuteAndReplacePipeline() {
       [](OpPassManager &pm,
          const ExecuteAndReplacePipelineOptions &) {
         OpPassManager &funcPM = pm.nest<func::FuncOp>();
-        funcPM.addPass(createExecuteArrayPass());
-        funcPM.addPass(createReduceResultsPass());
-        funcPM.addPass(createReplaceMatmulPass());
+        populateExecuteAndReplacePipeline(funcPM);
       });
 }
 
@@ -137,9 +165,6 @@ void mlir::analog::registerDispatchRuntimePipeline() {
       "Isolate analog routines and create weight/layer runtime dispatch entrypoints",
       [](OpPassManager &pm,
          const DispatchRuntimePipelineOptions &) {
-        OpPassManager &funcPM = pm.nest<func::FuncOp>();
-        funcPM.addPass(createIsolateLayersPass());
-        pm.addPass(createDispatchWeightsPass());
-        pm.addPass(createDispatchLayersPass());
+        populateDispatchRuntimePipeline(pm);
       });
 }

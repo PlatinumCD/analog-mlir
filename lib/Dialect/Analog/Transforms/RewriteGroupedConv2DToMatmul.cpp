@@ -1,4 +1,5 @@
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteGroupedConv2DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -18,18 +19,13 @@ namespace mlir {
 namespace analog {
 namespace {
 
-static constexpr llvm::StringLiteral kMatrixSourceIdAttr =
-    "analog.matrix_source_id";
-static constexpr llvm::StringLiteral kDeleteInFuturePassAttr =
-    "analog.delete_in_future_pass";
-static constexpr llvm::StringLiteral kSlidingWindowMatmulAttr =
-    "analog.sliding_window_matmul";
-static constexpr llvm::StringLiteral kSlidingWindowBiasAddAttr =
-    "analog.sliding_window_bias_add";
-static constexpr llvm::StringLiteral kOutputChannelAssemblyAttr =
-    "analog.output_channel_assembly";
-static constexpr llvm::StringLiteral kSlidingWindowPatchAttr =
-    "analog.sliding_window_patch";
+using detail::kDeleteInFuturePassAttr;
+using detail::kMatrixSourceIdAttr;
+using detail::kOutputChannelAssemblyAttr;
+using detail::kSlidingWindowBiasAddAttr;
+using detail::kSlidingWindowMatmulAttr;
+using detail::kSlidingWindowPatchAttr;
+
 static constexpr llvm::StringLiteral kRewrittenGroupedConv2DOutputAttr =
     "analog.rewritten_grouped_conv2d_output";
 
@@ -343,6 +339,13 @@ matchSupportedGroupedConv2D(linalg::Conv2DNgchwGfchwOp convOp) {
     return failure();
   if (groupedOutShape[0] != n || groupedOutShape[1] != g ||
       groupedOutShape[2] != fg)
+    return failure();
+  if (kh > h || kw > w)
+    return failure();
+
+  int64_t expectedOh = ((h - kh) / strides[0]) + 1;
+  int64_t expectedOw = ((w - kw) / strides[1]) + 1;
+  if (oh != expectedOh || ow != expectedOw)
     return failure();
 
   auto filterRank2Const = getOrCreateFlattenedFilter(filterRank4Const,

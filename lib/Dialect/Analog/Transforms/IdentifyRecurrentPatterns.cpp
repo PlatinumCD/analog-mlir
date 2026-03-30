@@ -1,4 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/IdentifyRecurrentPatterns.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RegionUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -19,14 +21,13 @@ namespace mlir {
 namespace analog {
 namespace {
 
-constexpr StringLiteral kRecurrentPatternAttr = "analog.recurrent_pattern";
-constexpr StringLiteral kRecurrentActivationAttr =
-    "analog.recurrent_activation";
-constexpr StringLiteral kRecurrentInputSizeAttr =
-    "analog.recurrent_input_size";
-constexpr StringLiteral kRecurrentHiddenSizeAttr =
-    "analog.recurrent_hidden_size";
-constexpr StringLiteral kRecurrentStepsAttr = "analog.recurrent_steps";
+using detail::kRecurrentActivationAttr;
+using detail::kRecurrentHiddenSizeAttr;
+using detail::kRecurrentInputSizeAttr;
+using detail::kRecurrentPatternAttr;
+using detail::kRecurrentStepsAttr;
+using detail::findTopLevelOwner;
+using detail::moveSegmentIntoBlock;
 
 struct RecurrentPatternMatch {
   StringRef kind;
@@ -39,6 +40,11 @@ struct RecurrentPatternMatch {
   int64_t hiddenSize = -1;
   int64_t steps = -1;
   StringRef activation;
+};
+
+struct TopLevelDependencySegment {
+  DenseSet<Operation *> owners;
+  Block *block = nullptr;
 };
 
 class RecurrentPatternMatcher {
@@ -109,17 +115,8 @@ static void claimMatchedOps(ArrayRef<Operation *> ops, DenseSet<Operation *> &cl
     claimed.insert(op);
 }
 
-// Walks up the parent chain to the operation directly owned by the function.
-static Operation *findTopLevelOwner(Operation *op) {
-  Operation *top = op;
-  while (top && !isa<func::FuncOp>(top->getParentOp()))
-    top = top->getParentOp();
-  return top;
-}
-
-// Collects the top-level dependency segment needed to compute `rootValue`.
-static SmallVector<Operation *> collectTopLevelDependencySegment(Value rootValue) {
-  DenseSet<Operation *> owners;
+static TopLevelDependencySegment collectDependencyOwners(Value rootValue) {
+  TopLevelDependencySegment segment;
   SmallVector<Value> worklist = {rootValue};
   while (!worklist.empty()) {
     Value value = worklist.pop_back_val();
@@ -127,35 +124,34 @@ static SmallVector<Operation *> collectTopLevelDependencySegment(Value rootValue
     if (!producer || isa<arith::ConstantOp>(producer))
       continue;
     Operation *top = findTopLevelOwner(producer);
-    if (!top || owners.contains(top))
+    if (!top || segment.owners.contains(top))
       continue;
-    owners.insert(top);
+    segment.owners.insert(top);
+    if (!segment.block)
+      segment.block = top->getBlock();
     top->walk([&](Operation *nested) {
       for (Value operand : nested->getOperands())
         worklist.push_back(operand);
     });
   }
+  return segment;
+}
 
+static SmallVector<Operation *>
+linearizeDependencyOwners(const TopLevelDependencySegment &segmentInfo) {
   SmallVector<Operation *> segment;
-  Block *block = nullptr;
-  for (Operation *op : owners) {
-    if (!block)
-      block = op->getBlock();
-  }
-  if (!block)
+  if (!segmentInfo.block)
     return segment;
-  for (Operation &op : *block) {
-    if (owners.contains(&op))
+  for (Operation &op : *segmentInfo.block) {
+    if (segmentInfo.owners.contains(&op))
       segment.push_back(&op);
   }
   return segment;
 }
 
-// Moves a contiguous top-level segment into the target block while preserving
-// the original operation order.
-static void moveSegmentIntoBlock(ArrayRef<Operation *> segment, Block *targetBlock) {
-  for (Operation *op : segment)
-    op->moveBefore(targetBlock, targetBlock->end());
+// Collects the top-level dependency segment needed to compute `rootValue`.
+static SmallVector<Operation *> collectTopLevelDependencySegment(Value rootValue) {
+  return linearizeDependencyOwners(collectDependencyOwners(rootValue));
 }
 
 //===----------------------------------------------------------------------===//

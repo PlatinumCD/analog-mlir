@@ -1,7 +1,9 @@
 #include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
+#include "analog-mlir/Dialect/Analog/Transforms/SourceTrackingUtils.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
@@ -22,8 +24,9 @@ namespace analog {
 
 namespace {
 
-constexpr StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
-
+using detail::getNextMatrixSourceId;
+using detail::getOrCreateMatrixSourceId;
+using detail::propagateMatrixSourceId;
 
 // Returns the ranked tensor type only for rank-2 floating-point tensor
 // constants that can become analog matrices.
@@ -38,50 +41,6 @@ RankedTensorType getMaterializableMatrixTensorType(arith::ConstantOp op) {
   }
 
   return tensorTy;
-}
-
-
-// Finds the next free matrix source id so newly discovered matrix constants
-// can participate in later analog execution passes.
-int64_t getNextMatrixSourceId(func::FuncOp func) {
-  int64_t nextMatrixSourceId = 0;
-  func.walk([&](arith::ConstantOp op) {
-    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
-    if (!matrixSourceId)
-      return;
-
-    nextMatrixSourceId =
-        std::max(nextMatrixSourceId, matrixSourceId.getInt() + 1);
-  });
-  return nextMatrixSourceId;
-}
-
-
-// Ensures each materializable matrix constant has a stable source id so
-// partitioning and execution can reconnect it to later matmuls.
-IntegerAttr getOrCreateMatrixSourceId(arith::ConstantOp op,
-                                      int64_t &nextMatrixSourceId) {
-  if (auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr))
-    return matrixSourceId;
-
-  auto matrixSourceId = IntegerAttr::get(
-      IntegerType::get(op.getContext(), 64), nextMatrixSourceId++);
-  op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
-  return matrixSourceId;
-}
-
-
-// Copies the matrix source id onto the newly inserted materialization
-// op so later passes can keep tracking it.
-
-void propagateMatrixSourceId(arith::ConstantOp op, Operation *materializedOp) {
-  if (!materializedOp) {
-    return;
-  }
-
-  if (auto matrixSourceId = op->getAttr(kMatrixSourceIdAttr)) {
-    materializedOp->setAttr(kMatrixSourceIdAttr, matrixSourceId);
-  }
 }
 
 } // namespace

@@ -1,4 +1,8 @@
 #include "analog-mlir/Dialect/Analog/Transforms/IsolateLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/LayerKinds.h"
+#include "analog-mlir/Dialect/Analog/Transforms/OutliningUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/RegionUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -31,50 +35,40 @@ using TaggedOpChainList = SmallVector<TaggedOpChain>;
 
 constexpr StringLiteral kMatrixInitializationAttr = "analog-matrix-initialization";
 constexpr StringLiteral kLinearRoutineAttr = "analog-linear-routine";
-constexpr StringLiteral kConv1DRoutineAttr = "analog-conv1d-routine";
-constexpr StringLiteral kConv2DRoutineAttr = "analog-conv2d-routine";
-constexpr StringLiteral kGroupedConv2DRoutineAttr = "analog-grouped-conv2d-routine";
-constexpr StringLiteral kConv3DRoutineAttr = "analog-conv3d-routine";
 constexpr StringLiteral kWeightIdAttr = "weight-id";
 constexpr StringLiteral kLayerIdAttr = "layer-id";
-constexpr StringLiteral kOutputChannelAssemblyAttr = "analog.output_channel_assembly";
-constexpr StringLiteral kSlidingWindowPatchAttr = "analog.sliding_window_patch";
-constexpr StringLiteral kSlidingWindowBiasAddAttr = "analog.sliding_window_bias_add";
 constexpr StringLiteral kMatrixInitializationPrefix = "analog_matrix_initialization_";
 constexpr StringLiteral kLinearRoutinePrefix = "analog_linear_routine_";
-constexpr StringLiteral kConv1DRoutinePrefix = "analog_conv1d_routine_";
-constexpr StringLiteral kConv2DRoutinePrefix = "analog_conv2d_routine_";
-constexpr StringLiteral kGroupedConv2DRoutinePrefix = "analog_grouped_conv2d_routine_";
-constexpr StringLiteral kConv3DRoutinePrefix = "analog_conv3d_routine_";
-constexpr StringLiteral kRewrittenConv1DOutputAttr = "analog.rewritten_conv1d_output";
-constexpr StringLiteral kRewrittenConv2DOutputAttr = "analog.rewritten_conv2d_output";
-constexpr StringLiteral kRewrittenGroupedConv2DOutputAttr = "analog.rewritten_grouped_conv2d_output";
-constexpr StringLiteral kRewrittenConv3DOutputAttr = "analog.rewritten_conv3d_output";
 
+using detail::allUsesInsideRegion;
+using detail::allUsesStayWithinTopLevelOwners;
+using detail::collectExternalValuesForRegion;
+using detail::collectSegmentClosure;
+using detail::computeEscapingResults;
+using detail::createExecuteRegionBlocks;
+using detail::filterUndominatedExternalValues;
+using detail::findTopLevelOwner;
+using detail::moveSegmentIntoBlock;
+using detail::replaceUsesInsideRegion;
+using detail::buildOutlinedFunctionName;
+using detail::cloneOutlinedOpsIntoBuilder;
+using detail::getOutlinedLayerReturns;
 
-// Walks up the parent chain until it finds the top-level operation
-// directly owned by the surrounding function body.
-
-static Operation *findTopLevelOwner(Operation *op) {
-  Operation *top = op;
-  while (top && !isa<func::FuncOp>(top->getParentOp()))
-    top = top->getParentOp();
-  return top;
+static SmallVector<const detail::LayerKindInfo *> getNonLinearLayerKinds() {
+  SmallVector<const detail::LayerKindInfo *> infos;
+  for (const detail::LayerKindInfo &info : detail::getLayerKindInfos()) {
+    if (info.kind != detail::LayerKind::linear)
+      infos.push_back(&info);
+  }
+  return infos;
 }
 
-
-// Returns whether every use of the producer stays within top-level owners
-// that are already part of the candidate segment.
-static bool allUsesStayWithinTopLevelOwners(
-    Operation *producer, const DenseSet<Operation *> &segmentOwners) {
-  for (Value result : producer->getResults()) {
-    for (Operation *user : result.getUsers()) {
-      Operation *userTop = findTopLevelOwner(user);
-      if (!userTop || !segmentOwners.contains(userTop))
-        return false;
-    }
+static const detail::LayerKindInfo &getRequiredLayerKind(detail::LayerKind kind) {
+  for (const detail::LayerKindInfo &info : detail::getLayerKindInfos()) {
+    if (info.kind == kind)
+      return info;
   }
-  return true;
+  llvm_unreachable("missing required layer kind metadata");
 }
 
 
@@ -100,7 +94,7 @@ static bool isAbsorbableTopLevelSetupOp(Operation *op) {
 // Returns whether the op is a top-level conv assembly loop that builds a
 // rank-4 or rank-5 tensor result, including degenerate spatial cases.
 static bool isTopLevelConvAssembly(Operation *op) {
-  if (!op || !op->hasAttr(kOutputChannelAssemblyAttr))
+  if (!op || !op->hasAttr(detail::kOutputChannelAssemblyAttr))
     return false;
 
   auto forOp = dyn_cast<scf::ForOp>(op);
@@ -116,8 +110,8 @@ static bool isTopLevelConvAssembly(Operation *op) {
 // including degenerate 1x1 convs that are split across several top-level ops.
 static bool isConvBoundaryTopLevelOp(Operation *op) {
   return isAbsorbableTopLevelSetupOp(op) || isTopLevelConvAssembly(op) ||
-         op->hasAttr(kSlidingWindowPatchAttr) ||
-         op->hasAttr(kSlidingWindowBiasAddAttr);
+         op->hasAttr(detail::kSlidingWindowPatchAttr) ||
+         op->hasAttr(detail::kSlidingWindowBiasAddAttr);
 }
 
 
@@ -135,9 +129,9 @@ static bool isDegenerateConvBoundaryTopLevelOp(Operation *op) {
                                                 analog::ArrayExecuteOp,
                                                 analog::ArrayStoreOp,
                                                 scf::ForOp>(op) ||
-         op->hasAttr(kSlidingWindowPatchAttr) ||
-         op->hasAttr(kSlidingWindowBiasAddAttr) ||
-         op->hasAttr(kOutputChannelAssemblyAttr);
+         op->hasAttr(detail::kSlidingWindowPatchAttr) ||
+         op->hasAttr(detail::kSlidingWindowBiasAddAttr) ||
+         op->hasAttr(detail::kOutputChannelAssemblyAttr);
 }
 
 
@@ -205,23 +199,6 @@ static OpChain buildClosedTopLevelSegment(Operation *anchor) {
   std::reverse(segment.begin(), segment.end());
   return segment;
 }
-
-
-
-// Collects every operation in the segment, including nested ops, so
-// later analyses can reason about closure and escaping uses.
-
-static DenseSet<Operation *> collectSegmentClosure(ArrayRef<Operation *> segment) {
-  DenseSet<Operation *> inChain;
-  for (Operation *cur : segment) {
-    if (!cur)
-      continue;
-    inChain.insert(cur);
-    cur->walk([&](Operation *nested) { inChain.insert(nested); });
-  }
-  return inChain;
-}
-
 
 // Finds the top-level op segments that initialize analog matrices from
 // dense resource-backed constants.
@@ -359,73 +336,23 @@ static void collectLayerRoutineChains(func::FuncOp func,
                                       TaggedOpChainList &layerRoutineChains) {
   DenseSet<Operation *> seenTopLevelOwners;
 
-  func.walk([&](Operation *op) {
-    if (!op->hasAttr(kRewrittenConv1DOutputAttr))
-      return;
+  for (const detail::LayerKindInfo *info : getNonLinearLayerKinds()) {
+    func.walk([&](Operation *op) {
+      if (!op->hasAttr(info->rewrittenOutputAttr))
+        return;
 
-    Operation *topLevelOwner = findTopLevelOwner(op);
-    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
-      return;
+      Operation *topLevelOwner = findTopLevelOwner(op);
+      if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
+        return;
 
-    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
-    if (!segment.empty()) {
-      for (Operation *segmentOp : segment)
-        seenTopLevelOwners.insert(segmentOp);
-      layerRoutineChains.push_back(
-          {std::move(segment), StringRef(kConv1DRoutineAttr)});
-    }
-  });
-
-  func.walk([&](Operation *op) {
-    if (!op->hasAttr(kRewrittenConv2DOutputAttr))
-      return;
-
-    Operation *topLevelOwner = findTopLevelOwner(op);
-    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
-      return;
-
-    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
-    if (!segment.empty()) {
-      for (Operation *segmentOp : segment)
-        seenTopLevelOwners.insert(segmentOp);
-      layerRoutineChains.push_back(
-          {std::move(segment), StringRef(kConv2DRoutineAttr)});
-    }
-  });
-
-  func.walk([&](Operation *op) {
-    if (!op->hasAttr(kRewrittenGroupedConv2DOutputAttr))
-      return;
-
-    Operation *topLevelOwner = findTopLevelOwner(op);
-    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
-      return;
-
-    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
-    if (!segment.empty()) {
-      for (Operation *segmentOp : segment)
-        seenTopLevelOwners.insert(segmentOp);
-      layerRoutineChains.push_back(
-          {std::move(segment), StringRef(kGroupedConv2DRoutineAttr)});
-    }
-  });
-
-  func.walk([&](Operation *op) {
-    if (!op->hasAttr(kRewrittenConv3DOutputAttr))
-      return;
-
-    Operation *topLevelOwner = findTopLevelOwner(op);
-    if (!topLevelOwner || !seenTopLevelOwners.insert(topLevelOwner).second)
-      return;
-
-    OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
-    if (!segment.empty()) {
-      for (Operation *segmentOp : segment)
-        seenTopLevelOwners.insert(segmentOp);
-      layerRoutineChains.push_back(
-          {std::move(segment), StringRef(kConv3DRoutineAttr)});
-    }
-  });
+      OpChain segment = buildClosedTopLevelSegment(topLevelOwner);
+      if (!segment.empty()) {
+        for (Operation *segmentOp : segment)
+          seenTopLevelOwners.insert(segmentOp);
+        layerRoutineChains.push_back({std::move(segment), info->routineAttr});
+      }
+    });
+  }
 
   func.walk([&](Operation *op) {
     if (!isTopLevelConvAssembly(op))
@@ -445,7 +372,8 @@ static void collectLayerRoutineChains(func::FuncOp func,
       for (Operation *segmentOp : segment)
         seenTopLevelOwners.insert(segmentOp);
       layerRoutineChains.push_back(
-          {std::move(segment), StringRef(kConv2DRoutineAttr)});
+          {std::move(segment),
+           getRequiredLayerKind(detail::LayerKind::conv2d).routineAttr});
     }
   });
 
@@ -453,8 +381,10 @@ static void collectLayerRoutineChains(func::FuncOp func,
     Operation *startTop = findTopLevelOwner(op.getOperation());
     if (!startTop || !startTop->getBlock())
       return;
-    if (startTop->hasAttr(kRewrittenConv2DOutputAttr) ||
-        startTop->hasAttr(kRewrittenGroupedConv2DOutputAttr))
+    if (startTop->hasAttr(
+            getRequiredLayerKind(detail::LayerKind::conv2d).rewrittenOutputAttr) ||
+        startTop->hasAttr(getRequiredLayerKind(detail::LayerKind::groupedConv2d)
+                              .rewrittenOutputAttr))
       return;
     if (!seenTopLevelOwners.insert(startTop).second)
       return;
@@ -490,19 +420,6 @@ static void collectLayerRoutineChains(func::FuncOp func,
 }
 
 
-// Returns whether the candidate region is the target region or is nested
-// beneath it through parent operations.
-static bool isRegionInsideRegion(Region *candidate, Region &target) {
-  for (Region *region = candidate; region; ) {
-    if (region == &target)
-      return true;
-    Operation *parent = region->getParentOp();
-    region = parent ? parent->getParentRegion() : nullptr;
-  }
-  return false;
-}
-
-
 // Checks whether any value produced inside the segment is consumed by
 // operations outside that segment.
 
@@ -529,38 +446,6 @@ static bool hasEscapingUses(ArrayRef<Operation *> segment) {
   }
   return false;
 }
-
-
-// Collects the produced values whose uses extend beyond the outlined
-// segment so wrapper regions can return them.
-
-static void computeEscapingResults(ArrayRef<Operation *> segment,
-                                   SmallVectorImpl<Value> &escapingResults) {
-  DenseSet<Operation *> inChain = collectSegmentClosure(segment);
-
-  for (Operation *cur : segment) {
-    if (!cur)
-      continue;
-    cur->walk([&](Operation *nested) {
-      if (isa<tensor::EmptyOp>(nested))
-        return;
-
-      for (Value res : nested->getResults()) {
-        bool escapes = false;
-        for (Operation *user : res.getUsers()) {
-          if (!inChain.contains(user)) {
-            escapes = true;
-            break;
-          }
-        }
-        if (escapes)
-          escapingResults.push_back(res);
-      }
-    });
-  }
-}
-
-
 // Finds arith constants used inside the execute region but defined
 // outside of it.
 
@@ -585,152 +470,6 @@ collectExternalConstantOpsForRegion(scf::ExecuteRegionOp exec) {
 
   return constants;
 }
-
-
-// Returns whether the given operation is nested anywhere inside the
-// target region.
-
-static bool isOpInsideRegion(Operation *op, Region &region) {
-  for (Region *r = op ? op->getParentRegion() : nullptr; r; ) {
-    if (r == &region)
-      return true;
-    Operation *parent = r->getParentOp();
-    r = parent ? parent->getParentRegion() : nullptr;
-  }
-  return false;
-}
-
-
-// Returns whether the value is defined by an operation or block argument
-// whose owner already lives inside the target region.
-static bool isValueDefinedInsideRegion(Value value, Region &region) {
-  if (!value)
-    return false;
-
-  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-    Block *owner = blockArg.getOwner();
-    return owner && isRegionInsideRegion(owner->getParent(), region);
-  }
-
-  return isOpInsideRegion(value.getDefiningOp(), region);
-}
-
-
-// Collects region operands that are defined outside the execute region so
-// outlined layer helpers can take them as explicit function arguments.
-static void collectExternalValuesForRegion(
-    scf::ExecuteRegionOp exec, SmallVectorImpl<Value> &externalValues) {
-  DenseSet<Value> seen;
-  Region &region = exec.getRegion();
-
-  region.walk([&](Operation *op) {
-    for (Value operand : op->getOperands()) {
-      if (isValueDefinedInsideRegion(operand, region))
-        continue;
-      if (!seen.insert(operand).second)
-        continue;
-      externalValues.push_back(operand);
-    }
-  });
-}
-
-
-// Returns whether the value is available at the execute-region call site
-// without depending on an op defined later in the same block.
-static bool isValueAvailableAtOp(Value value, Operation *op) {
-  if (!value || !op)
-    return false;
-
-  if (isa<BlockArgument>(value))
-    return true;
-
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp)
-    return false;
-
-  if (definingOp->getBlock() != op->getBlock())
-    return true;
-
-  if (definingOp == op)
-    return false;
-
-  return definingOp->isBeforeInBlock(op);
-}
-
-
-// Drops any captured values that are not actually available at the execute
-// region insertion point, preventing invalid helper call operands.
-static void filterUndominatedExternalValues(scf::ExecuteRegionOp exec,
-                                            SmallVectorImpl<Value> &values) {
-  llvm::erase_if(values, [&](Value value) {
-    return !isValueAvailableAtOp(value, exec.getOperation());
-  });
-}
-
-
-// Checks whether all uses of the constant stay within the target
-// region boundary.
-
-static bool allUsesInsideRegion(arith::ConstantOp cst, Region &region) {
-  for (Operation *user : cst->getUsers()) {
-    if (!isOpInsideRegion(user, region))
-      return false;
-  }
-  return true;
-}
-
-
-// Checks whether all uses of the operation stay within the target
-// region boundary.
-static bool allUsesInsideRegion(Operation *op, Region &region) {
-  if (!op)
-    return false;
-
-  for (Value result : op->getResults()) {
-    for (Operation *user : result.getUsers()) {
-      if (!isOpInsideRegion(user, region))
-        return false;
-    }
-  }
-  return true;
-}
-
-
-// Rewrites only the uses of a value that occur within the target
-// region.
-
-static void replaceUsesInsideRegion(Value oldValue, Value newValue, Region &region) {
-  oldValue.replaceUsesWithIf(newValue, [&](OpOperand &use) {
-    return isOpInsideRegion(use.getOwner(), region);
-  });
-}
-
-
-// Moves each top-level operation from the segment into the destination
-// block while skipping null or detached entries.
-
-static void moveSegmentIntoBlock(ArrayRef<Operation *> segment, Block *body) {
-  for (Operation *cur : segment) {
-    if (!cur || !cur->getBlock())
-      continue;
-    cur->moveBefore(body, body->end());
-  }
-}
-
-
-// Creates the canonical body and exit blocks for a new execute region
-// and adds them to the region.
-
-static std::pair<Block *, Block *> createExecuteRegionBlocks(
-    scf::ExecuteRegionOp exec) {
-  Block *body = new Block();
-  Block *exit = new Block();
-  exec.getRegion().push_back(body);
-  exec.getRegion().push_back(exit);
-  return {body, exit};
-}
-
-
 // Collects execute regions carrying a specific tag so they can be
 // rewritten after the walk is complete.
 
@@ -765,14 +504,6 @@ static ModuleOp getOutliningModule(func::FuncOp forward) {
 }
 
 
-// Builds the symbol name for an outlined helper from its prefix and
-// numeric id.
-
-static std::string buildOutlinedFunctionName(StringRef prefix, int64_t id) {
-  return (prefix + std::to_string(id)).str();
-}
-
-
 // Returns whether the function is an outlined helper that should not be
 // processed again by the isolation pass.
 static bool isOutlinedHelperFunction(func::FuncOp func) {
@@ -780,45 +511,14 @@ static bool isOutlinedHelperFunction(func::FuncOp func) {
     return false;
 
   StringRef name = func.getSymName();
-  return name.starts_with(kMatrixInitializationPrefix) ||
-         name.starts_with(kLinearRoutinePrefix) ||
-         name.starts_with(kConv1DRoutinePrefix) ||
-         name.starts_with(kConv2DRoutinePrefix) ||
-         name.starts_with(kGroupedConv2DRoutinePrefix) ||
-         name.starts_with(kConv3DRoutinePrefix);
-}
-
-
-// Clones non-terminator operations from the source block into the
-// builder while keeping the IR mapping current.
-
-static void cloneOutlinedOpsIntoBuilder(Block &source, OpBuilder &builder,
-                                        IRMapping &mapper) {
-  for (Operation &op : source) {
-    if (isa<cf::BranchOp, scf::YieldOp>(op))
-      continue;
-    Operation *cloned = builder.clone(op, mapper);
-    for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
-      mapper.map(oldRes, newRes);
+  if (name.starts_with(kMatrixInitializationPrefix) ||
+      name.starts_with(kLinearRoutinePrefix))
+    return true;
+  for (const detail::LayerKindInfo *info : getNonLinearLayerKinds()) {
+    if (name.starts_with(info->routinePrefix))
+      return true;
   }
-}
-
-
-// Maps the exit-branch operands from the outlined layer body into the
-// cloned function and returns them as function results.
-
-static FailureOr<SmallVector<Value>> getOutlinedLayerReturns(Block &bodyBlk,
-                                                             Block &exitBlk,
-                                                             IRMapping &mapper) {
-  auto br = dyn_cast<cf::BranchOp>(bodyBlk.getTerminator());
-  if (!br || br.getDest() != &exitBlk)
-    return failure();
-
-  SmallVector<Value> returns;
-  returns.reserve(br.getNumOperands());
-  for (Value v : br.getDestOperands())
-    returns.push_back(mapper.lookupOrDefault(v));
-  return returns;
+  return false;
 }
 
 
@@ -1128,18 +828,13 @@ static void convertLayerRegionToFunctionBody(func::FuncOp forward,
 // into helper function calls.
 
 static void convertLayerRegionsToFunctionBodies(func::FuncOp forward) {
-  for (auto [tag, prefix] : {
-           std::pair<StringRef, StringRef>{kLinearRoutineAttr,
-                                           kLinearRoutinePrefix},
-           std::pair<StringRef, StringRef>{kConv1DRoutineAttr,
-                                           kConv1DRoutinePrefix},
-           std::pair<StringRef, StringRef>{kConv2DRoutineAttr,
-                                           kConv2DRoutinePrefix},
-           std::pair<StringRef, StringRef>{kGroupedConv2DRoutineAttr,
-                                           kGroupedConv2DRoutinePrefix},
-           std::pair<StringRef, StringRef>{kConv3DRoutineAttr,
-                                           kConv3DRoutinePrefix},
-       }) {
+  SmallVector<std::pair<StringRef, StringRef>> routineKinds = {
+      {kLinearRoutineAttr, kLinearRoutinePrefix},
+  };
+  for (const detail::LayerKindInfo *info : getNonLinearLayerKinds())
+    routineKinds.push_back({info->routineAttr, info->routinePrefix});
+
+  for (auto [tag, prefix] : routineKinds) {
     SmallVector<scf::ExecuteRegionOp> execs =
         collectTaggedExecuteRegions(forward, tag);
 

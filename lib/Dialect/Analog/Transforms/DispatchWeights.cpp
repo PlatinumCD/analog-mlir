@@ -1,4 +1,5 @@
 #include "analog-mlir/Dialect/Analog/Transforms/DispatchWeights.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -22,8 +23,8 @@ constexpr StringLiteral kDispatchWeightFnName = "analog_dispatch_weight";
 constexpr StringLiteral kWaitWeightsFnName = "analog_wait_weights";
 constexpr StringLiteral kRunWeightFnName = "analog_run_weight";
 constexpr StringLiteral kInitWeightsFnName = "analog_init_weights";
-constexpr StringLiteral kWeightIdAttr = "weight-id";
-constexpr StringLiteral kShimRequiredAttr = "analog-shim-required";
+using detail::kShimRequiredAttr;
+using detail::kWeightIdAttr;
 
 struct WeightCallInfo {
   func::CallOp call;

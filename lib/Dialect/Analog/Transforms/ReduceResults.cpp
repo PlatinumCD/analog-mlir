@@ -1,4 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
+#include "analog-mlir/Dialect/Analog/Transforms/SourceTrackingUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
@@ -21,8 +23,8 @@ using namespace mlir;
 namespace mlir {
 namespace analog {
 
-static constexpr llvm::StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
-static constexpr llvm::StringLiteral kMatmulExecIdAttr = "analog.matmul_exec_id";
+using detail::kMatmulExecIdAttr;
+using detail::collectMatrixGridsBySourceId;
 
 struct ReductionPlan {
   analog::MatrixGridType gridTy;
@@ -38,28 +40,6 @@ struct ReductionConstants {
   Value c1;
   Value c0f;
 };
-
-
-// Builds a lookup from matrix source ids to the partitioned grid types
-// produced earlier in the lowering pipeline.
-
-static llvm::DenseMap<int64_t, analog::MatrixGridType>
-collectMatrixGridsBySourceId(func::FuncOp func) {
-  llvm::DenseMap<int64_t, analog::MatrixGridType> gridByMatrixSourceId;
-  func.walk([&](analog::MatrixPartitionOp op) {
-    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getResult().getType());
-    if (!gridTy) {
-      return;
-    }
-    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
-    if (!matrixSourceId) {
-      return;
-    }
-    gridByMatrixSourceId.try_emplace(matrixSourceId.getInt(), gridTy);
-  });
-  return gridByMatrixSourceId;
-}
-
 
 // Builds a lookup from execution ids to the allocated result buffers
 // created by the execute-array pass.
@@ -90,7 +70,7 @@ static FailureOr<std::optional<ReductionPlan>> buildReductionPlan(
     return failure();
   }
 
-  auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
+  auto matrixSourceId = detail::getMatrixSourceIdAttr(op);
   if (!matrixSourceId) {
     return std::optional<ReductionPlan>{};
   }

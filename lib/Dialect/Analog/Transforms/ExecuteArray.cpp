@@ -1,4 +1,6 @@
 #include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
+#include "analog-mlir/Dialect/Analog/Transforms/SourceTrackingUtils.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
@@ -20,8 +22,9 @@ using namespace mlir;
 namespace mlir {
 namespace analog {
 
-static constexpr llvm::StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
-static constexpr llvm::StringLiteral kMatmulExecIdAttr = "analog.matmul_exec_id";
+using detail::kMatmulExecIdAttr;
+using detail::collectMatrixGridsBySourceId;
+using detail::getOrInferMatmulSourceId;
 
 struct MatmulExecutionPlan {
   analog::MatrixGridType gridTy;
@@ -30,78 +33,10 @@ struct MatmulExecutionPlan {
   int64_t numArrayCols;
 };
 
-
-// Builds a lookup from matrix source ids to the partitioned grid types
-// produced earlier in the lowering pipeline.
-
-static llvm::DenseMap<int64_t, analog::MatrixGridType>
-collectMatrixGridsBySourceId(func::FuncOp func) {
-  llvm::DenseMap<int64_t, analog::MatrixGridType> gridByMatrixSourceId;
-  // Build a stable lookup from the matrix-partition stage into the execute
-  // stage. This avoids depending on traversal order or RHS SSA identity.
-  func.walk([&](analog::MatrixPartitionOp op) {
-    auto gridTy = llvm::dyn_cast<analog::MatrixGridType>(op.getResult().getType());
-    if (!gridTy) {
-      return;
-    }
-    auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
-    if (!matrixSourceId) {
-      return;
-    }
-    gridByMatrixSourceId.try_emplace(matrixSourceId.getInt(), gridTy);
-  });
-  return gridByMatrixSourceId;
-}
-
-
-// Tries to recover a matrix source id from a value that still traces back
-// to a tagged constant through simple tensor reshaping ops.
-static IntegerAttr findMatrixSourceIdOnValue(Value value) {
-  if (!value)
-    return {};
-
-  if (auto definingOp = value.getDefiningOp()) {
-    if (auto matrixSourceId =
-            definingOp->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr)) {
-      return matrixSourceId;
-    }
-  }
-
-  if (auto constantOp = value.getDefiningOp<arith::ConstantOp>()) {
-    return constantOp->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr);
-  }
-
-  if (auto transposeOp = value.getDefiningOp<linalg::TransposeOp>()) {
-    return findMatrixSourceIdOnValue(transposeOp.getInput());
-  }
-
-  return {};
-}
-
-
-// Ensures matmuls that consume a tagged constant-backed RHS tensor also
-// carry the source id needed by the execution pipeline.
-static IntegerAttr getOrInferMatmulSourceId(linalg::MatmulOp op) {
-  if (auto matrixSourceId = op->getAttrOfType<IntegerAttr>(kMatrixSourceIdAttr))
-    return matrixSourceId;
-
-  if (op.getInputs().size() < 2)
-    return {};
-
-  IntegerAttr matrixSourceId = findMatrixSourceIdOnValue(op.getInputs()[1]);
-  if (!matrixSourceId)
-    return {};
-
-  op->setAttr(kMatrixSourceIdAttr, matrixSourceId);
-  return matrixSourceId;
-}
-
-
 // Resolves the execution plan for a matmul tagged with a matrix source
 // id and reports whether this matmul should be rewritten.
 
-static FailureOr<std::optional<MatmulExecutionPlan>>
-buildMatmulExecutionPlan(
+static FailureOr<std::optional<MatmulExecutionPlan>> buildExecutionPlan(
     linalg::MatmulOp op,
     const llvm::DenseMap<int64_t, analog::MatrixGridType>
         &gridByMatrixSourceId) {
@@ -245,7 +180,7 @@ void ExecuteArrayPass::runOnOperation() {
     }
 
     FailureOr<std::optional<MatmulExecutionPlan>> maybePlan =
-        buildMatmulExecutionPlan(op, gridByMatrixSourceId);
+        buildExecutionPlan(op, gridByMatrixSourceId);
     if (failed(maybePlan)) {
       hadError = true;
       return;

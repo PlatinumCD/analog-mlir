@@ -2,6 +2,7 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogOps.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 #include "analog-mlir/Dialect/Analog/Transforms/TransformUtils.h"
 
 #include "llvm/Support/Casting.h"
@@ -17,7 +18,7 @@ namespace analog {
 
 namespace {
 
-constexpr StringLiteral kMatrixSourceIdAttr = "analog.matrix_source_id";
+using detail::kMatrixSourceIdAttr;
 
 
 // Returns the matrix type only for values already materialized as

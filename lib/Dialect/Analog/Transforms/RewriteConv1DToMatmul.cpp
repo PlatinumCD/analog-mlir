@@ -1,4 +1,5 @@
 #include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
+#include "analog-mlir/Dialect/Analog/Transforms/TransformAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -17,18 +18,13 @@ namespace mlir {
 namespace analog {
 namespace {
 
-static constexpr llvm::StringLiteral kMatrixSourceIdAttr =
-    "analog.matrix_source_id";
-static constexpr llvm::StringLiteral kDeleteInFuturePassAttr =
-    "analog.delete_in_future_pass";
-static constexpr llvm::StringLiteral kSlidingWindowMatmulAttr =
-    "analog.sliding_window_matmul";
-static constexpr llvm::StringLiteral kSlidingWindowBiasAddAttr =
-    "analog.sliding_window_bias_add";
-static constexpr llvm::StringLiteral kOutputChannelAssemblyAttr =
-    "analog.output_channel_assembly";
-static constexpr llvm::StringLiteral kSlidingWindowPatchAttr =
-    "analog.sliding_window_patch";
+using detail::kDeleteInFuturePassAttr;
+using detail::kMatrixSourceIdAttr;
+using detail::kOutputChannelAssemblyAttr;
+using detail::kSlidingWindowBiasAddAttr;
+using detail::kSlidingWindowMatmulAttr;
+using detail::kSlidingWindowPatchAttr;
+
 static constexpr llvm::StringLiteral kRewrittenConvOutputAttr =
     "analog.rewritten_conv1d_output";
 
@@ -295,7 +291,7 @@ static FailureOr<int64_t> getSupportedStride(linalg::Conv1DNcwFcwOp convOp) {
 static FailureOr<ConvTensorShapeInfo> getValidatedShapeInfo(
     RankedTensorType inputTy, RankedTensorType biasTy,
     RankedTensorType filterRank3Ty, RankedTensorType filterRank2Ty,
-    RankedTensorType outputTy) {
+    RankedTensorType outputTy, int64_t stride) {
   auto inputShape = inputTy.getShape();
   auto filterShape = filterRank3Ty.getShape();
   auto filterFlatShape = filterRank2Ty.getShape();
@@ -323,6 +319,12 @@ static FailureOr<ConvTensorShapeInfo> getValidatedShapeInfo(
   if (biasTy.getRank() != 0 && biasTy.getRank() != 1)
     return failure();
   if (outN != shapeInfo.n || outF != shapeInfo.f)
+    return failure();
+  if (shapeInfo.kw > shapeInfo.w)
+    return failure();
+
+  int64_t expectedOw = ((shapeInfo.w - shapeInfo.kw) / stride) + 1;
+  if (shapeInfo.ow != expectedOw)
     return failure();
 
   return shapeInfo;
@@ -362,7 +364,7 @@ matchSupportedConv1D(linalg::Conv1DNcwFcwOp convOp) {
     return failure();
 
   auto shapeInfo = getValidatedShapeInfo(inputTy, biasTy, filterRank3Ty,
-                                         filterRank2Ty, outputTy);
+                                         filterRank2Ty, outputTy, *stride);
   if (failed(shapeInfo))
     return failure();
 
