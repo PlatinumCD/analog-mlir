@@ -7,6 +7,15 @@ import numpy as np
 from simulated_core import SimulatedCore
 
 
+def _debug_enabled():
+    return os.environ.get("ANALOG_DEBUG_SIM_DEBUG", "0") == "1"
+
+
+def _debug_print(message):
+    if _debug_enabled():
+        print(message)
+
+
 def _read_env_int(name, default):
     return int(os.environ.get(name, str(default)))
 
@@ -18,7 +27,7 @@ class CoreManager:
         self.array_rows = array_rows
         self.array_cols = array_cols
         self.active_core = None
-        print(
+        _debug_print(
             "[core manager] initializing "
             f"{num_cores} cores with {arrays_per_core} arrays/core "
             f"({array_rows}x{array_cols})"
@@ -32,7 +41,7 @@ class CoreManager:
                 core_index=core_index,
             )
             self.cores.append(core)
-            print(f"[core manager] initialized core {core_index}")
+            _debug_print(f"[core manager] initialized core {core_index}")
         self._shutdown_event = threading.Event()
         self.threads = []
 
@@ -56,11 +65,11 @@ class CoreManager:
                 f"core_index {core_index} out of bounds for {self.num_cores} cores"
             )
         self.active_core = core_index
-        print(f"[core manager] active core set to {core_index}")
+        _debug_print(f"[core manager] active core set to {core_index}")
 
     def clear_active_core(self):
         self.active_core = None
-        print("[core manager] active core cleared")
+        _debug_print("[core manager] active core cleared")
 
     def record_mvm_set(self, data_ptr, raw_array_id):
         if self.active_core is None:
@@ -113,7 +122,7 @@ class CoreManager:
             )
 
         output = self.cores[self.active_core].store_output(raw_array_id)
-        print(
+        _debug_print(
             f"[core manager] output from active core {self.active_core}, "
             f"array {raw_array_id}:\n{output}"
         )
@@ -161,7 +170,7 @@ class CoreManagerRuntime:
                 array_rows=resolved_array_rows,
                 array_cols=resolved_array_cols,
             )
-            print("[core manager runtime] initialized")
+            _debug_print("[core manager runtime] initialized")
         return cls._core_manager
 
     @classmethod

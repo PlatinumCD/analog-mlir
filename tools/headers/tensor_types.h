@@ -87,6 +87,7 @@ inline void printTensor(const char *label, const Tensor2DF32 &tensor) {
   std::printf("%s (%lld x %lld)\n", label,
               static_cast<long long>(tensor.sizes[0]),
               static_cast<long long>(tensor.sizes[1]));
+#ifdef DEBUG_MODE
   std::printf("  allocated=%p aligned=%p offset=%lld\n",
               static_cast<void *>(tensor.allocated),
               static_cast<void *>(tensor.aligned),
@@ -94,6 +95,7 @@ inline void printTensor(const char *label, const Tensor2DF32 &tensor) {
   std::printf("  strides=(%lld x %lld)\n",
               static_cast<long long>(tensor.strides[0]),
               static_cast<long long>(tensor.strides[1]));
+#endif
 
   for (int64_t row = 0; row < tensor.sizes[0]; ++row) {
     std::printf("  [");
@@ -116,6 +118,7 @@ inline void printTensor(const char *label, const Tensor3DF32 &tensor) {
               static_cast<long long>(tensor.sizes[0]),
               static_cast<long long>(tensor.sizes[1]),
               static_cast<long long>(tensor.sizes[2]));
+#ifdef DEBUG_MODE
   std::printf("  allocated=%p aligned=%p offset=%lld\n",
               static_cast<void *>(tensor.allocated),
               static_cast<void *>(tensor.aligned),
@@ -124,6 +127,7 @@ inline void printTensor(const char *label, const Tensor3DF32 &tensor) {
               static_cast<long long>(tensor.strides[0]),
               static_cast<long long>(tensor.strides[1]),
               static_cast<long long>(tensor.strides[2]));
+#endif
 
   for (int64_t d0 = 0; d0 < tensor.sizes[0]; ++d0) {
     for (int64_t d1 = 0; d1 < tensor.sizes[1]; ++d1) {
@@ -150,6 +154,7 @@ inline void printTensor(const char *label, const Tensor4DF32 &tensor) {
               static_cast<long long>(tensor.sizes[1]),
               static_cast<long long>(tensor.sizes[2]),
               static_cast<long long>(tensor.sizes[3]));
+#ifdef DEBUG_MODE
   std::printf("  allocated=%p aligned=%p offset=%lld\n",
               static_cast<void *>(tensor.allocated),
               static_cast<void *>(tensor.aligned),
@@ -159,6 +164,7 @@ inline void printTensor(const char *label, const Tensor4DF32 &tensor) {
               static_cast<long long>(tensor.strides[1]),
               static_cast<long long>(tensor.strides[2]),
               static_cast<long long>(tensor.strides[3]));
+#endif
 
   for (int64_t d0 = 0; d0 < tensor.sizes[0]; ++d0) {
     for (int64_t d1 = 0; d1 < tensor.sizes[1]; ++d1) {
@@ -190,6 +196,7 @@ inline void printTensor(const char *label, const Tensor5DF32 &tensor) {
               static_cast<long long>(tensor.sizes[2]),
               static_cast<long long>(tensor.sizes[3]),
               static_cast<long long>(tensor.sizes[4]));
+#ifdef DEBUG_MODE
   std::printf("  allocated=%p aligned=%p offset=%lld\n",
               static_cast<void *>(tensor.allocated),
               static_cast<void *>(tensor.aligned),
@@ -200,6 +207,7 @@ inline void printTensor(const char *label, const Tensor5DF32 &tensor) {
               static_cast<long long>(tensor.strides[2]),
               static_cast<long long>(tensor.strides[3]),
               static_cast<long long>(tensor.strides[4]));
+#endif
 
   for (int64_t d0 = 0; d0 < tensor.sizes[0]; ++d0) {
     for (int64_t d1 = 0; d1 < tensor.sizes[1]; ++d1) {

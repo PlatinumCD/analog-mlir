@@ -53,6 +53,30 @@ PythonBridgeState &getState() {
   return state;
 }
 
+void setPythonDebugModeEnv() {
+#ifdef DEBUG_MODE
+  setenv("ANALOG_DEBUG_SIM_DEBUG", "1", 1);
+#else
+  setenv("ANALOG_DEBUG_SIM_DEBUG", "0", 1);
+#endif
+}
+
+void debugLogFloatArray(const char *label, int32_t rawArrayId, const float *values,
+                        ssize_t valueCount) {
+#ifdef DEBUG_MODE
+  std::fprintf(stderr, "[python bridge] %s %d:", label, rawArrayId);
+  for (ssize_t i = 0; i < valueCount; ++i) {
+    std::fprintf(stderr, " %g", values[i]);
+  }
+  std::fprintf(stderr, "\n");
+#else
+  (void)label;
+  (void)rawArrayId;
+  (void)values;
+  (void)valueCount;
+#endif
+}
+
 template <typename T>
 bool loadSymbol(PythonApi &api, T &fn, const char *name) {
   fn = reinterpret_cast<T>(dlsym(api.handle, name));
@@ -181,6 +205,8 @@ bool analog_debug_python_bridge_initialize() {
   if (!loadPythonApi()) {
     return false;
   }
+
+  setPythonDebugModeEnv();
 
   if (!state.api.Py_IsInitialized()) {
     state.api.Py_Initialize();
@@ -772,11 +798,7 @@ bool analog_debug_python_bridge_record_mvm_store(void *data, int32_t rawArrayId)
 
   const float *values = reinterpret_cast<const float *>(bytesData);
   const ssize_t valueCount = bytesSize / static_cast<ssize_t>(sizeof(float));
-  std::fprintf(stderr, "[python bridge] output array %d:", rawArrayId);
-  for (ssize_t i = 0; i < valueCount; ++i) {
-    std::fprintf(stderr, " %g", values[i]);
-  }
-  std::fprintf(stderr, "\n");
+  debugLogFloatArray("output array", rawArrayId, values, valueCount);
 
   if (bytesSize > 0) {
     std::memcpy(data, bytesData, static_cast<size_t>(bytesSize));
@@ -784,11 +806,7 @@ bool analog_debug_python_bridge_record_mvm_store(void *data, int32_t rawArrayId)
 
   const long arrayRows = readEnvInt("ARRAY_ROWS", 1);
   const float *storedData = reinterpret_cast<const float *>(data);
-  std::fprintf(stderr, "[python bridge] copied data buffer %d:", rawArrayId);
-  for (long i = 0; i < arrayRows; ++i) {
-    std::fprintf(stderr, " %g", storedData[i]);
-  }
-  std::fprintf(stderr, "\n");
+  debugLogFloatArray("copied data buffer", rawArrayId, storedData, arrayRows);
 
   state.api.Py_DecRef(bytesObject);
 

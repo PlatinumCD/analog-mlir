@@ -1,4 +1,15 @@
+import os
+
 import numpy as np
+
+
+def _debug_enabled():
+    return os.environ.get("ANALOG_DEBUG_SIM_DEBUG", "0") == "1"
+
+
+def _debug_print(message):
+    if _debug_enabled():
+        print(message)
 
 
 class SimulatedCore:
@@ -27,7 +38,7 @@ class SimulatedCore:
     def set_array(self, data, array_index):
         self._check_array_index(array_index)
         self.arrays[array_index] = np.asarray(data, dtype=np.float32)
-        print(
+        _debug_print(
             f"[simulated core {self.core_index}] set matrix {array_index}:"
             f"\n{self.arrays[array_index]}"
         )
@@ -35,7 +46,7 @@ class SimulatedCore:
     def load_input(self, data, array_index):
         self._check_array_index(array_index)
         self.input_buffers[array_index] = np.asarray(data, dtype=np.float32)
-        print(
+        _debug_print(
             f"[simulated core {self.core_index}] loaded input {array_index}:"
             f"\n{self.input_buffers[array_index]}"
         )
@@ -46,7 +57,7 @@ class SimulatedCore:
             self.arrays[array_index] @ self.input_buffers[array_index],
             dtype=np.float32,
         )
-        print(
+        _debug_print(
             f"[simulated core {self.core_index}] computed output {array_index}:"
             f"\n{self.output_buffers[array_index]}"
         )
