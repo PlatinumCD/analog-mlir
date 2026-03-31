@@ -1,37 +1,28 @@
 #include "python_bridge.h"
 
-#include <cstdio>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <unistd.h>
 
-#ifndef NUM_CORES
-#define NUM_CORES 1
-#endif
-
-#if NUM_CORES <= 0
-#error "NUM_CORES must be > 0"
-#endif
-
 namespace {
 
 struct _object;
 using PyObject = _object;
 using PyGILState_STATE = int;
-using PyThreadState = void;
 
 struct PythonApi {
   void *handle = nullptr;
-
   int (*Py_IsInitialized)() = nullptr;
   void (*Py_Initialize)() = nullptr;
   PyGILState_STATE (*PyGILState_Ensure)() = nullptr;
   void (*PyGILState_Release)(PyGILState_STATE) = nullptr;
-  PyThreadState *(*PyEval_SaveThread)() = nullptr;
-  PyObject *(*PyErr_Occurred)() = nullptr;
+  void *(*PyEval_SaveThread)() = nullptr;
   void (*PyErr_Print)() = nullptr;
   PyObject *(*PySys_GetObject)(const char *) = nullptr;
   PyObject *(*PyUnicode_FromString)(const char *) = nullptr;
@@ -39,47 +30,27 @@ struct PythonApi {
   PyObject *(*PyImport_ImportModule)(const char *) = nullptr;
   PyObject *(*PyObject_GetAttrString)(PyObject *, const char *) = nullptr;
   PyObject *(*PyObject_CallObject)(PyObject *, PyObject *) = nullptr;
-  int (*PyObject_IsTrue)(PyObject *) = nullptr;
   PyObject *(*PyTuple_New)(ssize_t) = nullptr;
   int (*PyTuple_SetItem)(PyObject *, ssize_t, PyObject *) = nullptr;
   PyObject *(*PyLong_FromLong)(long) = nullptr;
   PyObject *(*PyLong_FromVoidPtr)(void *) = nullptr;
+  int (*PyBytes_AsStringAndSize)(PyObject *, char **, ssize_t *) = nullptr;
   void (*Py_DecRef)(PyObject *) = nullptr;
 };
 
 struct PythonBridgeState {
   PythonApi api;
-  bool interpreterInitialized = false;
   bool moduleInitialized = false;
   bool releasedMainThread = false;
-  PyObject *module = nullptr;
+  PyObject *coreManagerModule = nullptr;
+  PyObject *coreManagerRuntime = nullptr;
   PyObject *initializeFn = nullptr;
-  PyObject *bindFn = nullptr;
-  PyObject *dispatchFn = nullptr;
-  PyObject *waitFn = nullptr;
-  PyObject *layerDispatchFn = nullptr;
-  PyObject *layerWaitFn = nullptr;
-  PyObject *recordSetFn = nullptr;
-  PyObject *recordLoadFn = nullptr;
-  PyObject *recordComputeFn = nullptr;
-  PyObject *recordStoreFn = nullptr;
-  std::string boundSoPath;
+  PyObject *getCoreManagerFn = nullptr;
 };
 
 PythonBridgeState &getState() {
   static PythonBridgeState state;
   return state;
-}
-
-void clearPythonError(const char *context) {
-  PythonBridgeState &state = getState();
-  if (!state.api.PyErr_Occurred || !state.api.PyErr_Occurred()) {
-    return;
-  }
-  std::fprintf(stderr, "[python bridge] %s failed\n", context);
-  if (state.api.PyErr_Print) {
-    state.api.PyErr_Print();
-  }
 }
 
 template <typename T>
@@ -102,7 +73,9 @@ bool loadPythonApi() {
       "libpython3.10.so.1.0",
       "libpython3.10.so.1",
       "libpython3.10.so",
-      "/usr/lib/python3.10/config-3.10-aarch64-linux-gnu/libpython3.10.so",
+      "libpython3.11.so.1.0",
+      "libpython3.11.so.1",
+      "libpython3.11.so",
   };
 
   for (const char *candidate : kPythonLibCandidates) {
@@ -122,19 +95,21 @@ bool loadPythonApi() {
          loadSymbol(state.api, state.api.PyGILState_Ensure, "PyGILState_Ensure") &&
          loadSymbol(state.api, state.api.PyGILState_Release, "PyGILState_Release") &&
          loadSymbol(state.api, state.api.PyEval_SaveThread, "PyEval_SaveThread") &&
-         loadSymbol(state.api, state.api.PyErr_Occurred, "PyErr_Occurred") &&
          loadSymbol(state.api, state.api.PyErr_Print, "PyErr_Print") &&
          loadSymbol(state.api, state.api.PySys_GetObject, "PySys_GetObject") &&
          loadSymbol(state.api, state.api.PyUnicode_FromString, "PyUnicode_FromString") &&
          loadSymbol(state.api, state.api.PyList_Append, "PyList_Append") &&
          loadSymbol(state.api, state.api.PyImport_ImportModule, "PyImport_ImportModule") &&
-         loadSymbol(state.api, state.api.PyObject_GetAttrString, "PyObject_GetAttrString") &&
-         loadSymbol(state.api, state.api.PyObject_CallObject, "PyObject_CallObject") &&
-         loadSymbol(state.api, state.api.PyObject_IsTrue, "PyObject_IsTrue") &&
+         loadSymbol(state.api, state.api.PyObject_GetAttrString,
+                    "PyObject_GetAttrString") &&
+         loadSymbol(state.api, state.api.PyObject_CallObject,
+                    "PyObject_CallObject") &&
          loadSymbol(state.api, state.api.PyTuple_New, "PyTuple_New") &&
          loadSymbol(state.api, state.api.PyTuple_SetItem, "PyTuple_SetItem") &&
          loadSymbol(state.api, state.api.PyLong_FromLong, "PyLong_FromLong") &&
          loadSymbol(state.api, state.api.PyLong_FromVoidPtr, "PyLong_FromVoidPtr") &&
+         loadSymbol(state.api, state.api.PyBytes_AsStringAndSize,
+                    "PyBytes_AsStringAndSize") &&
          loadSymbol(state.api, state.api.Py_DecRef, "Py_DecRef");
 }
 
@@ -161,116 +136,43 @@ std::optional<std::filesystem::path> getPythonModuleDir() {
   return dir / "python";
 }
 
-std::optional<std::filesystem::path> getCurrentSharedObjectPath() {
-  auto exePath = getExecutablePath();
-  if (!exePath) {
-    return std::nullopt;
+bool appendPythonPath(const std::filesystem::path &path) {
+  PythonBridgeState &state = getState();
+  PyObject *sysPath = state.api.PySys_GetObject("path");
+  if (!sysPath) {
+    state.api.PyErr_Print();
+    return false;
   }
 
-  std::filesystem::path outDir = exePath->parent_path();
-  std::string testName = exePath->stem().string();
-  return outDir / ("libpython_" + testName + ".so");
-}
-
-bool appendPythonPath(PyObject *sysPath, const std::filesystem::path &path) {
-  PythonBridgeState &state = getState();
   PyObject *pathObj = state.api.PyUnicode_FromString(path.string().c_str());
   if (!pathObj) {
-    clearPythonError("creating Python path string");
+    state.api.PyErr_Print();
     return false;
   }
 
   int rc = state.api.PyList_Append(sysPath, pathObj);
   state.api.Py_DecRef(pathObj);
   if (rc != 0) {
-    clearPythonError("appending module path to sys.path");
+    state.api.PyErr_Print();
     return false;
   }
   return true;
 }
 
-bool callBridgeBool(PyObject *callable, PyObject *args, const char *context) {
-  PythonBridgeState &state = getState();
-  PyObject *result = state.api.PyObject_CallObject(callable, args);
-  if (!result) {
-    clearPythonError(context);
-    return false;
+long readEnvInt(const char *name, long fallback) {
+  if (const char *value = std::getenv(name)) {
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (end != value) {
+      return parsed;
+    }
   }
-
-  int ok = state.api.PyObject_IsTrue(result);
-  state.api.Py_DecRef(result);
-  return ok == 1;
+  return fallback;
 }
 
-bool callBridgeBoolPtrLong(PyObject *callable, void *ptr, long value,
-                           const char *context) {
-  PythonBridgeState &state = getState();
-  PyObject *args = state.api.PyTuple_New(2);
-  if (!args) {
-    clearPythonError("allocating Python tuple");
-    return false;
-  }
+} // namespace
 
-  PyObject *ptrObj = state.api.PyLong_FromVoidPtr(ptr);
-  PyObject *valueObj = state.api.PyLong_FromLong(value);
-  if (!ptrObj || !valueObj) {
-    clearPythonError("allocating tuple arguments");
-    state.api.Py_DecRef(args);
-    return false;
-  }
-
-  state.api.PyTuple_SetItem(args, 0, ptrObj);
-  state.api.PyTuple_SetItem(args, 1, valueObj);
-  bool ok = callBridgeBool(callable, args, context);
-  state.api.Py_DecRef(args);
-  return ok;
-}
-
-bool callBridgeBoolNoArgs(PyObject *callable, const char *context) {
-  return callBridgeBool(callable, nullptr, context);
-}
-
-bool callBridgeBoolOneLong(PyObject *callable, long value, const char *context) {
-  PythonBridgeState &state = getState();
-  PyObject *args = state.api.PyTuple_New(1);
-  if (!args) {
-    clearPythonError("allocating Python tuple");
-    return false;
-  }
-
-  if (state.api.PyTuple_SetItem(args, 0, state.api.PyLong_FromLong(value)) != 0) {
-    clearPythonError(context);
-    state.api.Py_DecRef(args);
-    return false;
-  }
-
-  bool ok = callBridgeBool(callable, args, context);
-  state.api.Py_DecRef(args);
-  return ok;
-}
-
-bool callBridgeBoolOneString(PyObject *callable, const std::string &value,
-                             const char *context) {
-  PythonBridgeState &state = getState();
-  PyObject *args = state.api.PyTuple_New(1);
-  if (!args) {
-    clearPythonError("allocating Python tuple");
-    return false;
-  }
-
-  if (state.api.PyTuple_SetItem(
-          args, 0, state.api.PyUnicode_FromString(value.c_str())) != 0) {
-    clearPythonError(context);
-    state.api.Py_DecRef(args);
-    return false;
-  }
-
-  bool ok = callBridgeBool(callable, args, context);
-  state.api.Py_DecRef(args);
-  return ok;
-}
-
-bool initializeInterpreterAndModule() {
+bool analog_debug_python_bridge_initialize() {
   PythonBridgeState &state = getState();
   if (state.moduleInitialized) {
     return true;
@@ -282,60 +184,92 @@ bool initializeInterpreterAndModule() {
 
   if (!state.api.Py_IsInitialized()) {
     state.api.Py_Initialize();
-    state.interpreterInitialized = true;
-  }
-
-  auto pythonDir = getPythonModuleDir();
-  if (!pythonDir || !std::filesystem::exists(*pythonDir)) {
-    std::fprintf(stderr, "[python bridge] python module directory not found\n");
-    return false;
   }
 
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
 
-  PyObject *sysPath = state.api.PySys_GetObject("path");
-  if (!sysPath || !appendPythonPath(sysPath, *pythonDir)) {
+  auto pythonDir = getPythonModuleDir();
+  if (!pythonDir || !std::filesystem::exists(*pythonDir)) {
+    std::fprintf(stderr, "[python bridge] python module directory not found\n");
     state.api.PyGILState_Release(gil);
     return false;
   }
 
-  state.module = state.api.PyImport_ImportModule("debug_weight_bridge");
-  if (!state.module) {
-    clearPythonError("importing debug_weight_bridge");
+  if (!appendPythonPath(*pythonDir)) {
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.coreManagerModule = state.api.PyImport_ImportModule("core_manager");
+  if (!state.coreManagerModule) {
+    std::fprintf(stderr, "[python bridge] failed to import core_manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.coreManagerRuntime =
+      state.api.PyObject_GetAttrString(state.coreManagerModule,
+                                       "CoreManagerRuntime");
+  if (!state.coreManagerRuntime) {
+    std::fprintf(stderr, "[python bridge] core_manager missing CoreManagerRuntime\n");
+    state.api.PyErr_Print();
     state.api.PyGILState_Release(gil);
     return false;
   }
 
   state.initializeFn =
-      state.api.PyObject_GetAttrString(state.module, "initialize_bridge");
-  state.bindFn = state.api.PyObject_GetAttrString(state.module, "bind_shared_object");
-  state.dispatchFn = state.api.PyObject_GetAttrString(state.module, "dispatch_weight");
-  state.waitFn = state.api.PyObject_GetAttrString(state.module, "wait_weights");
-  state.layerDispatchFn =
-      state.api.PyObject_GetAttrString(state.module, "dispatch_layer");
-  state.layerWaitFn =
-      state.api.PyObject_GetAttrString(state.module, "wait_layers");
-  state.recordSetFn = state.api.PyObject_GetAttrString(state.module, "record_mvm_set");
-  state.recordLoadFn =
-      state.api.PyObject_GetAttrString(state.module, "record_mvm_load");
-  state.recordComputeFn =
-      state.api.PyObject_GetAttrString(state.module, "record_mvm_compute");
-  state.recordStoreFn =
-      state.api.PyObject_GetAttrString(state.module, "record_mvm_store");
-
-  if (!state.initializeFn || !state.bindFn || !state.dispatchFn ||
-      !state.waitFn || !state.recordSetFn || !state.recordLoadFn ||
-      !state.recordComputeFn || !state.recordStoreFn) {
-    clearPythonError("loading debug_weight_bridge callables");
+      state.api.PyObject_GetAttrString(state.coreManagerRuntime, "initialize");
+  if (!state.initializeFn) {
+    std::fprintf(stderr, "[python bridge] CoreManagerRuntime missing initialize\n");
+    state.api.PyErr_Print();
     state.api.PyGILState_Release(gil);
     return false;
   }
 
-  if (!callBridgeBoolOneLong(state.initializeFn, NUM_CORES,
-                             "calling initialize_bridge")) {
+  state.getCoreManagerFn =
+      state.api.PyObject_GetAttrString(state.coreManagerRuntime, "get_core_manager");
+  if (!state.getCoreManagerFn) {
+    std::fprintf(stderr,
+                 "[python bridge] CoreManagerRuntime missing get_core_manager\n");
+    state.api.PyErr_Print();
     state.api.PyGILState_Release(gil);
     return false;
   }
+
+  PyObject *args = state.api.PyTuple_New(4);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  const long numCores = readEnvInt("NUM_CORES", 1);
+  const long arraysPerCore = readEnvInt("ARRAYS_PER_CORE", 1);
+  const long arrayRows = readEnvInt("ARRAY_ROWS", 1);
+  const long arrayCols = readEnvInt("ARRAY_COLS", 1);
+
+  if (state.api.PyTuple_SetItem(args, 0, state.api.PyLong_FromLong(numCores)) != 0 ||
+      state.api.PyTuple_SetItem(args, 1,
+                                state.api.PyLong_FromLong(arraysPerCore)) != 0 ||
+      state.api.PyTuple_SetItem(args, 2, state.api.PyLong_FromLong(arrayRows)) != 0 ||
+      state.api.PyTuple_SetItem(args, 3, state.api.PyLong_FromLong(arrayCols)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *coreManager = state.api.PyObject_CallObject(state.initializeFn, args);
+  state.api.Py_DecRef(args);
+  if (!coreManager) {
+    std::fprintf(stderr,
+                 "[python bridge] failed to initialize CoreManagerRuntime\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+  state.api.Py_DecRef(coreManager);
 
   state.moduleInitialized = true;
 
@@ -349,167 +283,456 @@ bool initializeInterpreterAndModule() {
   return true;
 }
 
-} // namespace
-
-bool analog_debug_python_bridge_initialize() {
-  return initializeInterpreterAndModule();
-}
-
-bool analog_debug_python_bridge_bind_current_test() {
-  if (!initializeInterpreterAndModule()) {
-    return false;
-  }
-
-  auto soPath = getCurrentSharedObjectPath();
-  if (!soPath) {
-    std::fprintf(stderr,
-                 "[python bridge] failed to derive current test shared object path\n");
-    return false;
-  }
-
-  if (!std::filesystem::exists(*soPath)) {
-    std::fprintf(stderr, "[python bridge] shared object not found: %s\n",
-                 soPath->c_str());
-    return false;
-  }
-
+bool analog_debug_python_bridge_dispatch_weight(int32_t weightId) {
   PythonBridgeState &state = getState();
-  if (state.boundSoPath == soPath->string()) {
-    return true;
+  if (!analog_debug_python_bridge_initialize()) {
+    return false;
   }
 
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok =
-      callBridgeBoolOneString(state.bindFn, soPath->string(),
-                              "calling bind_shared_object");
-  state.api.PyGILState_Release(gil);
-  if (!ok) {
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
     return false;
   }
 
-  state.boundSoPath = soPath->string();
+  PyObject *setActiveCoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "set_active_core");
+  if (!setActiveCoreFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing set_active_core\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(2);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(setActiveCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0,
+                                state.api.PyLong_FromLong(weightId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(setActiveCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(setActiveCoreFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(setActiveCoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to set active core\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
+  state.api.PyGILState_Release(gil);
   return true;
 }
 
-bool analog_debug_python_bridge_dispatch_weight(int32_t weightId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
-    return false;
-  }
-
-  PythonBridgeState &state = getState();
-  PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolOneLong(state.dispatchFn, weightId,
-                                  "calling dispatch_weight");
-  state.api.PyGILState_Release(gil);
-  return ok;
-}
-
 bool analog_debug_python_bridge_wait_weights() {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolNoArgs(state.waitFn, "calling wait_weights");
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *clearActiveCoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "clear_active_core");
+  if (!clearActiveCoreFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing clear_active_core\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(clearActiveCoreFn, nullptr);
+  state.api.Py_DecRef(clearActiveCoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to clear active core\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }
 
 bool analog_debug_python_bridge_dispatch_layer(int32_t layerId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolOneLong(state.layerDispatchFn, layerId,
-                                   "calling dispatch_layer");
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *setActiveCoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "set_active_core");
+  if (!setActiveCoreFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing set_active_core\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(1);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(setActiveCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0,
+                                state.api.PyLong_FromLong(layerId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(setActiveCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(setActiveCoreFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(setActiveCoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to set active core\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }
 
-bool analog_debug_python_bridge_wait_layers() {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+bool analog_debug_python_bridge_wait_layers() { return true; }
+
+bool analog_debug_python_bridge_record_mvm_set(void *data, int32_t rawArrayId) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolNoArgs(state.layerWaitFn, "calling wait_layers");
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *recordMvmSetFn =
+      state.api.PyObject_GetAttrString(coreManager, "record_mvm_set");
+  if (!recordMvmSetFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing record_mvm_set\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(1);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(recordMvmSetFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0, state.api.PyLong_FromVoidPtr(data)) != 0 ||
+      state.api.PyTuple_SetItem(args, 1,
+                                state.api.PyLong_FromLong(rawArrayId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(recordMvmSetFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(recordMvmSetFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(recordMvmSetFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to record mvm_set\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }
 
-bool analog_debug_python_bridge_record_mvm_set(void *data,
-                                               int32_t rawArrayId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+bool analog_debug_python_bridge_record_mvm_load(void *data, int32_t rawArrayId) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *recordMvmLoadFn =
+      state.api.PyObject_GetAttrString(coreManager, "record_mvm_load");
+  if (!recordMvmLoadFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing record_mvm_load\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
   PyObject *args = state.api.PyTuple_New(2);
   if (!args) {
-    clearPythonError("allocating Python tuple");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(recordMvmLoadFn);
+    state.api.Py_DecRef(coreManager);
     state.api.PyGILState_Release(gil);
     return false;
   }
 
-  PyObject *ptrObj = state.api.PyLong_FromVoidPtr(data);
-  PyObject *idObj = state.api.PyLong_FromLong(rawArrayId);
-  if (!ptrObj || !idObj) {
-    clearPythonError("allocating argument");
+  if (state.api.PyTuple_SetItem(args, 0, state.api.PyLong_FromVoidPtr(data)) != 0 ||
+      state.api.PyTuple_SetItem(args, 1,
+                                state.api.PyLong_FromLong(rawArrayId)) != 0) {
+    state.api.PyErr_Print();
     state.api.Py_DecRef(args);
+    state.api.Py_DecRef(recordMvmLoadFn);
+    state.api.Py_DecRef(coreManager);
     state.api.PyGILState_Release(gil);
     return false;
   }
 
-  state.api.PyTuple_SetItem(args, 0, ptrObj);
-  state.api.PyTuple_SetItem(args, 1, idObj);
-  bool ok = callBridgeBool(state.recordSetFn, args, "calling record_mvm_set");
+  PyObject *result = state.api.PyObject_CallObject(recordMvmLoadFn, args);
   state.api.Py_DecRef(args);
-  state.api.PyGILState_Release(gil);
-  return ok;
-}
-
-bool analog_debug_python_bridge_record_mvm_load(void *data,
-                                               int32_t rawArrayId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+  state.api.Py_DecRef(recordMvmLoadFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to record mvm_load\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
     return false;
   }
 
-  PythonBridgeState &state = getState();
-  PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolPtrLong(state.recordLoadFn, data, rawArrayId,
-                                  "calling record_mvm_load");
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }
 
 bool analog_debug_python_bridge_record_mvm_compute(int32_t rawArrayId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolOneLong(state.recordComputeFn, rawArrayId,
-                                   "calling record_mvm_compute");
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *recordMvmComputeFn =
+      state.api.PyObject_GetAttrString(coreManager, "record_mvm_compute");
+  if (!recordMvmComputeFn) {
+    std::fprintf(stderr,
+                 "[python bridge] core manager missing record_mvm_compute\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(1);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(recordMvmComputeFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0,
+                                state.api.PyLong_FromLong(rawArrayId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(recordMvmComputeFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(recordMvmComputeFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(recordMvmComputeFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to record mvm_compute\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }
 
-bool analog_debug_python_bridge_record_mvm_store(void *data,
-                                               int32_t rawArrayId) {
-  if (!analog_debug_python_bridge_bind_current_test()) {
+bool analog_debug_python_bridge_record_mvm_store(void *data, int32_t rawArrayId) {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
     return false;
   }
 
-  PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
-  bool ok = callBridgeBoolPtrLong(state.recordStoreFn, data, rawArrayId,
-                                  "calling record_mvm_store");
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *recordMvmStoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "record_mvm_store");
+  if (!recordMvmStoreFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing record_mvm_store\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(2);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(recordMvmStoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0,
+                                state.api.PyLong_FromLong(rawArrayId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(recordMvmStoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(recordMvmStoreFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(recordMvmStoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to record mvm_store\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *toBytesFn = state.api.PyObject_GetAttrString(result, "tobytes");
+  if (!toBytesFn) {
+    std::fprintf(stderr, "[python bridge] mvm_store result missing tobytes\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *bytesObject = state.api.PyObject_CallObject(toBytesFn, nullptr);
+  state.api.Py_DecRef(toBytesFn);
+  if (!bytesObject) {
+    std::fprintf(stderr, "[python bridge] failed to serialize mvm_store result\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  char *bytesData = nullptr;
+  ssize_t bytesSize = 0;
+  if (state.api.PyBytes_AsStringAndSize(bytesObject, &bytesData, &bytesSize) != 0) {
+    std::fprintf(stderr, "[python bridge] failed to read mvm_store bytes\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(bytesObject);
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (bytesSize > 0) {
+    std::memcpy(data, bytesData, static_cast<size_t>(bytesSize));
+  }
+
+  state.api.Py_DecRef(bytesObject);
+  state.api.Py_DecRef(result);
   state.api.PyGILState_Release(gil);
-  return ok;
+  return true;
 }

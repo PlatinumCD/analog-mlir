@@ -18,11 +18,11 @@ DEBUG_PYTHON_CXXFLAGS := $(PYTHON_CXXFLAGS) -DDEBUG_MODE
 PYTHON_LDFLAGS := $(shell python3 -c "import sysconfig, os, glob; libdir=sysconfig.get_config_var('LIBDIR') or ''; lib=sysconfig.get_config_var('LDLIBRARY') or ''; libpath=os.path.join(libdir, lib); matches=glob.glob(libpath + '*') if lib and not os.path.exists(libpath) else []; lib=os.path.basename(matches[0]) if matches else lib; print(f'-L{libdir} -l:{lib} -ldl -lm')")
 
 
-NUM_CORES ?= 3
-ARRAYS_PER_CORE ?= 1
-ARRAY_ROWS ?= 8
-ARRAY_COLS ?= 8
-TEST_NAME := one_layer_linear
+NUM_CORES ?= 1
+ARRAYS_PER_CORE ?= 4
+ARRAY_ROWS ?= 4
+ARRAY_COLS ?= 4
+TEST_NAME := one_layer_linear_sharded
 
 INPUT_MLIR := $(ROOT)/tools/debug-simulator/tests/$(TEST_NAME)/$(TEST_NAME).ll
 OUT_DIR := $(ROOT)/tools/debug-simulator/tests/$(TEST_NAME)/out

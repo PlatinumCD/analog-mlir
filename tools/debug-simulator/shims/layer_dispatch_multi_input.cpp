@@ -1,5 +1,7 @@
 #include "../../headers/layer_dispatch_multi_input.h"
+#include "python_bridge.h"
 
+#include <cstdlib>
 #include <cstdio>
 
 #ifdef DEBUG_MODE
@@ -74,4 +76,3 @@ extern "C" Tensor2DF32 analog_wait_layers_2d_from_3d_2d() {
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_wait_layers_2d_from_3d_2d");
   return result;
 }
-

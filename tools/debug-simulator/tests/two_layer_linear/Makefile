@@ -22,7 +22,7 @@ NUM_CORES ?= 3
 ARRAYS_PER_CORE ?= 1
 ARRAY_ROWS ?= 8
 ARRAY_COLS ?= 8
-TEST_NAME := one_layer_linear
+TEST_NAME := two_layer_linear
 
 INPUT_MLIR := $(ROOT)/tools/debug-simulator/tests/$(TEST_NAME)/$(TEST_NAME).ll
 OUT_DIR := $(ROOT)/tools/debug-simulator/tests/$(TEST_NAME)/out

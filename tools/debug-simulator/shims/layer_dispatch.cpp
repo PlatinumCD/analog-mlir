@@ -22,19 +22,6 @@ namespace {
 template <typename TensorT>
 TensorT makeInvalidTensor();
 
-static bool dispatchLayer(int32_t layerId) {
-  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
-    std::fprintf(stderr,
-                 "[debug-simulator shim] dispatch_layer failed for %d\n",
-                 static_cast<int>(layerId));
-    return false;
-  }
-  return true;
-}
-
-static Tensor2DF32 lastLayerResult2d;
-static bool haveLayerResult2d = false;
-
 template <>
 Tensor2DF32 makeInvalidTensor<Tensor2DF32>() {
   return Tensor2DF32{nullptr, nullptr, -1, {-1, -1}, {-1, -1}};
@@ -158,21 +145,14 @@ extern "C" void analog_dispatch_layer_2d(float *allocated, float *aligned,
                                          int64_t size1, int64_t stride0,
                                          int64_t stride1, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_2d");
-  if (!dispatchLayer(layerId)) {
+  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
+    std::fprintf(stderr,
+                 "[debug-simulator shim] dispatch_layer failed for %d\n",
+                 static_cast<int>(layerId));
     std::abort();
   }
-  if (aligned) {
-    float *data = aligned + offset;
-    golem_debug_mvm_load(static_cast<void *>(data), layerId);
-  }
-  (void)allocated;
-  (void)aligned;
-  (void)offset;
-  (void)size0;
-  (void)size1;
-  (void)stride0;
-  (void)stride1;
-  (void)layerId;
+  (void)analog_run_layer_2d(allocated, aligned, offset, size0, size1, stride0,
+                            stride1, layerId);
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_dispatch_layer_2d");
 }
 
@@ -182,7 +162,10 @@ extern "C" void analog_dispatch_layer_3d(float *allocated, float *aligned,
                                          int64_t stride0, int64_t stride1,
                                          int64_t stride2, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_3d");
-  if (!dispatchLayer(layerId)) {
+  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
+    std::fprintf(stderr,
+                 "[debug-simulator shim] dispatch_layer failed for %d\n",
+                 static_cast<int>(layerId));
     std::abort();
   }
   (void)allocated;
@@ -205,7 +188,10 @@ extern "C" void analog_dispatch_layer_4d(float *allocated, float *aligned,
                                          int64_t stride1, int64_t stride2,
                                          int64_t stride3, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_4d");
-  if (!dispatchLayer(layerId)) {
+  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
+    std::fprintf(stderr,
+                 "[debug-simulator shim] dispatch_layer failed for %d\n",
+                 static_cast<int>(layerId));
     std::abort();
   }
   (void)allocated;
@@ -231,7 +217,10 @@ extern "C" void analog_dispatch_layer_5d(float *allocated, float *aligned,
                                          int64_t stride2, int64_t stride3,
                                          int64_t stride4, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_5d");
-  if (!dispatchLayer(layerId)) {
+  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
+    std::fprintf(stderr,
+                 "[debug-simulator shim] dispatch_layer failed for %d\n",
+                 static_cast<int>(layerId));
     std::abort();
   }
   (void)allocated;
