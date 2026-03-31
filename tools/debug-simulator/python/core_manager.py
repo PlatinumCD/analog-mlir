@@ -103,17 +103,6 @@ class CoreManager:
 
         self.cores[self.active_core].compute(raw_array_id)
 
-    def record_mvm_store(self, raw_array_id):
-        if self.active_core is None:
-            raise ValueError("active core is not set")
-        if not 0 <= raw_array_id < self.arrays_per_core:
-            raise IndexError(
-                f"raw_array_id {raw_array_id} out of bounds for "
-                f"{self.arrays_per_core} arrays per core"
-            )
-
-        return self.cores[self.active_core].store_output(raw_array_id)
-
     def shutdown(self):
         self._shutdown_event.set()
         for thread in self.threads:
