@@ -1,4 +1,4 @@
-#include "../../headers/python_bridge.h"
+#include "python_bridge.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -8,12 +8,12 @@
 #include <string>
 #include <unistd.h>
 
-#ifndef NUM_LAYERS
-#define NUM_LAYERS 1
+#ifndef NUM_CORES
+#define NUM_CORES 1
 #endif
 
-#if NUM_LAYERS <= 0
-#error "NUM_LAYERS must be > 0"
+#if NUM_CORES <= 0
+#error "NUM_CORES must be > 0"
 #endif
 
 namespace {
@@ -43,6 +43,7 @@ struct PythonApi {
   PyObject *(*PyTuple_New)(ssize_t) = nullptr;
   int (*PyTuple_SetItem)(PyObject *, ssize_t, PyObject *) = nullptr;
   PyObject *(*PyLong_FromLong)(long) = nullptr;
+  PyObject *(*PyLong_FromVoidPtr)(void *) = nullptr;
   void (*Py_DecRef)(PyObject *) = nullptr;
 };
 
@@ -56,6 +57,12 @@ struct PythonBridgeState {
   PyObject *bindFn = nullptr;
   PyObject *dispatchFn = nullptr;
   PyObject *waitFn = nullptr;
+  PyObject *layerDispatchFn = nullptr;
+  PyObject *layerWaitFn = nullptr;
+  PyObject *recordSetFn = nullptr;
+  PyObject *recordLoadFn = nullptr;
+  PyObject *recordComputeFn = nullptr;
+  PyObject *recordStoreFn = nullptr;
   std::string boundSoPath;
 };
 
@@ -127,6 +134,7 @@ bool loadPythonApi() {
          loadSymbol(state.api, state.api.PyTuple_New, "PyTuple_New") &&
          loadSymbol(state.api, state.api.PyTuple_SetItem, "PyTuple_SetItem") &&
          loadSymbol(state.api, state.api.PyLong_FromLong, "PyLong_FromLong") &&
+         loadSymbol(state.api, state.api.PyLong_FromVoidPtr, "PyLong_FromVoidPtr") &&
          loadSymbol(state.api, state.api.Py_DecRef, "Py_DecRef");
 }
 
@@ -181,9 +189,9 @@ bool appendPythonPath(PyObject *sysPath, const std::filesystem::path &path) {
   return true;
 }
 
-bool callBridgeBoolNoArgs(PyObject *callable, const char *context) {
+bool callBridgeBool(PyObject *callable, PyObject *args, const char *context) {
   PythonBridgeState &state = getState();
-  PyObject *result = state.api.PyObject_CallObject(callable, nullptr);
+  PyObject *result = state.api.PyObject_CallObject(callable, args);
   if (!result) {
     clearPythonError(context);
     return false;
@@ -192,6 +200,34 @@ bool callBridgeBoolNoArgs(PyObject *callable, const char *context) {
   int ok = state.api.PyObject_IsTrue(result);
   state.api.Py_DecRef(result);
   return ok == 1;
+}
+
+bool callBridgeBoolPtrLong(PyObject *callable, void *ptr, long value,
+                           const char *context) {
+  PythonBridgeState &state = getState();
+  PyObject *args = state.api.PyTuple_New(2);
+  if (!args) {
+    clearPythonError("allocating Python tuple");
+    return false;
+  }
+
+  PyObject *ptrObj = state.api.PyLong_FromVoidPtr(ptr);
+  PyObject *valueObj = state.api.PyLong_FromLong(value);
+  if (!ptrObj || !valueObj) {
+    clearPythonError("allocating tuple arguments");
+    state.api.Py_DecRef(args);
+    return false;
+  }
+
+  state.api.PyTuple_SetItem(args, 0, ptrObj);
+  state.api.PyTuple_SetItem(args, 1, valueObj);
+  bool ok = callBridgeBool(callable, args, context);
+  state.api.Py_DecRef(args);
+  return ok;
+}
+
+bool callBridgeBoolNoArgs(PyObject *callable, const char *context) {
+  return callBridgeBool(callable, nullptr, context);
 }
 
 bool callBridgeBoolOneLong(PyObject *callable, long value, const char *context) {
@@ -208,16 +244,9 @@ bool callBridgeBoolOneLong(PyObject *callable, long value, const char *context) 
     return false;
   }
 
-  PyObject *result = state.api.PyObject_CallObject(callable, args);
+  bool ok = callBridgeBool(callable, args, context);
   state.api.Py_DecRef(args);
-  if (!result) {
-    clearPythonError(context);
-    return false;
-  }
-
-  int ok = state.api.PyObject_IsTrue(result);
-  state.api.Py_DecRef(result);
-  return ok == 1;
+  return ok;
 }
 
 bool callBridgeBoolOneString(PyObject *callable, const std::string &value,
@@ -236,16 +265,9 @@ bool callBridgeBoolOneString(PyObject *callable, const std::string &value,
     return false;
   }
 
-  PyObject *result = state.api.PyObject_CallObject(callable, args);
+  bool ok = callBridgeBool(callable, args, context);
   state.api.Py_DecRef(args);
-  if (!result) {
-    clearPythonError(context);
-    return false;
-  }
-
-  int ok = state.api.PyObject_IsTrue(result);
-  state.api.Py_DecRef(result);
-  return ok == 1;
+  return ok;
 }
 
 bool initializeInterpreterAndModule() {
@@ -289,14 +311,27 @@ bool initializeInterpreterAndModule() {
   state.bindFn = state.api.PyObject_GetAttrString(state.module, "bind_shared_object");
   state.dispatchFn = state.api.PyObject_GetAttrString(state.module, "dispatch_weight");
   state.waitFn = state.api.PyObject_GetAttrString(state.module, "wait_weights");
+  state.layerDispatchFn =
+      state.api.PyObject_GetAttrString(state.module, "dispatch_layer");
+  state.layerWaitFn =
+      state.api.PyObject_GetAttrString(state.module, "wait_layers");
+  state.recordSetFn = state.api.PyObject_GetAttrString(state.module, "record_mvm_set");
+  state.recordLoadFn =
+      state.api.PyObject_GetAttrString(state.module, "record_mvm_load");
+  state.recordComputeFn =
+      state.api.PyObject_GetAttrString(state.module, "record_mvm_compute");
+  state.recordStoreFn =
+      state.api.PyObject_GetAttrString(state.module, "record_mvm_store");
 
-  if (!state.initializeFn || !state.bindFn || !state.dispatchFn || !state.waitFn) {
+  if (!state.initializeFn || !state.bindFn || !state.dispatchFn ||
+      !state.waitFn || !state.recordSetFn || !state.recordLoadFn ||
+      !state.recordComputeFn || !state.recordStoreFn) {
     clearPythonError("loading debug_weight_bridge callables");
     state.api.PyGILState_Release(gil);
     return false;
   }
 
-  if (!callBridgeBoolOneLong(state.initializeFn, NUM_LAYERS,
+  if (!callBridgeBoolOneLong(state.initializeFn, NUM_CORES,
                              "calling initialize_bridge")) {
     state.api.PyGILState_Release(gil);
     return false;
@@ -377,6 +412,104 @@ bool analog_debug_python_bridge_wait_weights() {
   PythonBridgeState &state = getState();
   PyGILState_STATE gil = state.api.PyGILState_Ensure();
   bool ok = callBridgeBoolNoArgs(state.waitFn, "calling wait_weights");
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_dispatch_layer(int32_t layerId) {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  bool ok = callBridgeBoolOneLong(state.layerDispatchFn, layerId,
+                                   "calling dispatch_layer");
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_wait_layers() {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  bool ok = callBridgeBoolNoArgs(state.layerWaitFn, "calling wait_layers");
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_record_mvm_set(void *data,
+                                               int32_t rawArrayId) {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  PyObject *args = state.api.PyTuple_New(2);
+  if (!args) {
+    clearPythonError("allocating Python tuple");
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *ptrObj = state.api.PyLong_FromVoidPtr(data);
+  PyObject *idObj = state.api.PyLong_FromLong(rawArrayId);
+  if (!ptrObj || !idObj) {
+    clearPythonError("allocating argument");
+    state.api.Py_DecRef(args);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.PyTuple_SetItem(args, 0, ptrObj);
+  state.api.PyTuple_SetItem(args, 1, idObj);
+  bool ok = callBridgeBool(state.recordSetFn, args, "calling record_mvm_set");
+  state.api.Py_DecRef(args);
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_record_mvm_load(void *data,
+                                               int32_t rawArrayId) {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  bool ok = callBridgeBoolPtrLong(state.recordLoadFn, data, rawArrayId,
+                                  "calling record_mvm_load");
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_record_mvm_compute(int32_t rawArrayId) {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  bool ok = callBridgeBoolOneLong(state.recordComputeFn, rawArrayId,
+                                   "calling record_mvm_compute");
+  state.api.PyGILState_Release(gil);
+  return ok;
+}
+
+bool analog_debug_python_bridge_record_mvm_store(void *data,
+                                               int32_t rawArrayId) {
+  if (!analog_debug_python_bridge_bind_current_test()) {
+    return false;
+  }
+
+  PythonBridgeState &state = getState();
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+  bool ok = callBridgeBoolPtrLong(state.recordStoreFn, data, rawArrayId,
+                                  "calling record_mvm_store");
   state.api.PyGILState_Release(gil);
   return ok;
 }

@@ -1,6 +1,10 @@
 #include "../../headers/layer_dispatch.h"
+#include "python_bridge.h"
 
 #include <cstdio>
+#include <cstdlib>
+
+#include "../../headers/analog_operations.h"
 
 namespace {
 
@@ -17,6 +21,19 @@ namespace {
 
 template <typename TensorT>
 TensorT makeInvalidTensor();
+
+static bool dispatchLayer(int32_t layerId) {
+  if (!analog_debug_python_bridge_dispatch_layer(layerId)) {
+    std::fprintf(stderr,
+                 "[debug-simulator shim] dispatch_layer failed for %d\n",
+                 static_cast<int>(layerId));
+    return false;
+  }
+  return true;
+}
+
+static Tensor2DF32 lastLayerResult2d;
+static bool haveLayerResult2d = false;
 
 template <>
 Tensor2DF32 makeInvalidTensor<Tensor2DF32>() {
@@ -141,6 +158,13 @@ extern "C" void analog_dispatch_layer_2d(float *allocated, float *aligned,
                                          int64_t size1, int64_t stride0,
                                          int64_t stride1, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_2d");
+  if (!dispatchLayer(layerId)) {
+    std::abort();
+  }
+  if (aligned) {
+    float *data = aligned + offset;
+    golem_debug_mvm_load(static_cast<void *>(data), layerId);
+  }
   (void)allocated;
   (void)aligned;
   (void)offset;
@@ -158,6 +182,9 @@ extern "C" void analog_dispatch_layer_3d(float *allocated, float *aligned,
                                          int64_t stride0, int64_t stride1,
                                          int64_t stride2, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_3d");
+  if (!dispatchLayer(layerId)) {
+    std::abort();
+  }
   (void)allocated;
   (void)aligned;
   (void)offset;
@@ -178,6 +205,9 @@ extern "C" void analog_dispatch_layer_4d(float *allocated, float *aligned,
                                          int64_t stride1, int64_t stride2,
                                          int64_t stride3, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_4d");
+  if (!dispatchLayer(layerId)) {
+    std::abort();
+  }
   (void)allocated;
   (void)aligned;
   (void)offset;
@@ -201,6 +231,9 @@ extern "C" void analog_dispatch_layer_5d(float *allocated, float *aligned,
                                          int64_t stride2, int64_t stride3,
                                          int64_t stride4, int32_t layerId) {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_dispatch_layer_5d");
+  if (!dispatchLayer(layerId)) {
+    std::abort();
+  }
   (void)allocated;
   (void)aligned;
   (void)offset;
@@ -220,6 +253,9 @@ extern "C" void analog_dispatch_layer_5d(float *allocated, float *aligned,
 
 extern "C" Tensor2DF32 analog_wait_layers_2d() {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_wait_layers_2d");
+  if (!analog_debug_python_bridge_wait_layers()) {
+    std::abort();
+  }
   Tensor2DF32 result = makeInvalidTensor<Tensor2DF32>();
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_wait_layers_2d");
   return result;
@@ -227,6 +263,9 @@ extern "C" Tensor2DF32 analog_wait_layers_2d() {
 
 extern "C" Tensor3DF32 analog_wait_layers_3d() {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_wait_layers_3d");
+  if (!analog_debug_python_bridge_wait_layers()) {
+    std::abort();
+  }
   Tensor3DF32 result = makeInvalidTensor<Tensor3DF32>();
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_wait_layers_3d");
   return result;
@@ -234,6 +273,9 @@ extern "C" Tensor3DF32 analog_wait_layers_3d() {
 
 extern "C" Tensor4DF32 analog_wait_layers_4d() {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_wait_layers_4d");
+  if (!analog_debug_python_bridge_wait_layers()) {
+    std::abort();
+  }
   Tensor4DF32 result = makeInvalidTensor<Tensor4DF32>();
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_wait_layers_4d");
   return result;
@@ -241,6 +283,9 @@ extern "C" Tensor4DF32 analog_wait_layers_4d() {
 
 extern "C" Tensor5DF32 analog_wait_layers_5d() {
   ANALOG_DEBUG_SIM_SHIM_TRACE("analog_wait_layers_5d");
+  if (!analog_debug_python_bridge_wait_layers()) {
+    std::abort();
+  }
   Tensor5DF32 result = makeInvalidTensor<Tensor5DF32>();
   ANALOG_DEBUG_SIM_SHIM_TRACE_EXIT("analog_wait_layers_5d");
   return result;

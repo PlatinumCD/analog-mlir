@@ -13,14 +13,15 @@ CXXFLAGS := -std=c++17 -I$(ROOT)
 DEBUG_CXXFLAGS := $(CXXFLAGS) -DDEBUG_MODE
 PYTHON_INCLUDE := $(shell python3 -c "import sysconfig; print(sysconfig.get_paths()['include'])")
 PYTHON_LIBDIR := $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
-PYTHON_LIBNAME := $(shell python3 -c "print('python{}.{}'.format(*__import__('sys').version_info[:2]))")
 PYTHON_CXXFLAGS := $(CXXFLAGS) -I$(PYTHON_INCLUDE)
 DEBUG_PYTHON_CXXFLAGS := $(PYTHON_CXXFLAGS) -DDEBUG_MODE
-PYTHON_LDFLAGS := -L$(PYTHON_LIBDIR) -l$(PYTHON_LIBNAME) -ldl -lm
+PYTHON_LDFLAGS := $(shell python3 -c "import sysconfig, os, glob; libdir=sysconfig.get_config_var('LIBDIR') or ''; lib=sysconfig.get_config_var('LDLIBRARY') or ''; libpath=os.path.join(libdir, lib); matches=glob.glob(libpath + '*') if lib and not os.path.exists(libpath) else []; lib=os.path.basename(matches[0]) if matches else lib; print(f'-L{libdir} -l:{lib} -ldl -lm')")
 
 
-ARRAY_ROWS ?= 8
-ARRAY_COLS ?= 8
+NUM_CORES ?= 1
+ARRAYS_PER_CORE ?= 4
+ARRAY_ROWS ?= 4
+ARRAY_COLS ?= 4
 TEST_NAME := one_layer_linear
 
 INPUT_MLIR := $(ROOT)/tools/debug-simulator/tests/$(TEST_NAME)/$(TEST_NAME).ll
@@ -38,10 +39,14 @@ LAYER_DISPATCH_OBJECT := $(OUT_DIR)/layer_dispatch.o
 LAYER_DISPATCH_MULTI_OBJECT := $(OUT_DIR)/layer_dispatch_multi_input.o
 WEIGHT_DISPATCH_OBJECT := $(OUT_DIR)/weight_dispatch.o
 ANALOG_OPERATIONS_OBJECT := $(OUT_DIR)/analog_operations.o
-+PYTHON_BRIDGE_OBJECT := $(OUT_DIR)/python_bridge.o
+PYTHON_BRIDGE_OBJECT := $(OUT_DIR)/python_bridge.o
 
 
-.PHONY: build build-debug analog-transformations mlir-transformations object python-so binary clean
+.PHONY: run build build-debug analog-transformations mlir-transformations object python-so binary clean
+
+run: build
+	ARRAY_ROWS=$(ARRAY_ROWS) ARRAY_COLS=$(ARRAY_COLS) \
+	  ARRAYS_PER_CORE=$(ARRAYS_PER_CORE) $(BINARY_FILE)
 
 build:
 	@$(MAKE) analog-transformations
@@ -58,19 +63,19 @@ build-debug:
 	$(MAKE) DEBUG_MODE=1 binary
 
 analog-transformations: $(ANALOG_MLIR)
-	@echo "Analog transformations written to $(ANALOG_MLIR)"
+	@:
 
 mlir-transformations: $(LOWERED_MLIR)
-	@echo "MLIR transformations written to $(LOWERED_MLIR)"
+	@:
 
 object: $(OBJECT_FILE)
-	@echo "Object artifact written to $(OBJECT_FILE)"
+	@:
 
 python-so: $(PYTHON_SO)
-	@echo "Python artifact written to $(PYTHON_SO)"
+	@:
 
 binary: $(BINARY_FILE)
-	@echo "Binary artifact is not implemented yet."
+	@:
 
 $(OUT_DIR):
 	@mkdir -p $(OUT_DIR)
@@ -130,7 +135,9 @@ $(ANALOG_OPERATIONS_OBJECT): $(ROOT)/tools/debug-simulator/shims/analog_operatio
 
 
 $(PYTHON_BRIDGE_OBJECT): $(ROOT)/tools/debug-simulator/shims/python_bridge.cpp | $(OUT_DIR)
-	$(CLANGXX) $(if $(DEBUG_MODE),$(DEBUG_PYTHON_CXXFLAGS),$(PYTHON_CXXFLAGS)) -c $< -o $@
+	$(CLANGXX) $(if $(DEBUG_MODE),$(DEBUG_PYTHON_CXXFLAGS),$(PYTHON_CXXFLAGS)) \
+	  -DNUM_CORES=$(NUM_CORES) \
+	  -c $< -o $@
 
 $(PYTHON_SO): $(OBJECT_FILE) | $(OUT_DIR)
 	$(CLANGXX) -shared -Wl,--allow-shlib-undefined $(OBJECT_FILE) -o $(PYTHON_SO)

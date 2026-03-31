@@ -32,4 +32,12 @@ bool analog_debug_python_bridge_dispatch_weight(int32_t weightId);
 */
 bool analog_debug_python_bridge_wait_weights();
 
+bool analog_debug_python_bridge_dispatch_layer(int32_t layerId);
+bool analog_debug_python_bridge_wait_layers();
+
+bool analog_debug_python_bridge_record_mvm_set(void *data, int32_t rawArrayId);
+bool analog_debug_python_bridge_record_mvm_load(void *data, int32_t rawArrayId);
+bool analog_debug_python_bridge_record_mvm_compute(int32_t rawArrayId);
+bool analog_debug_python_bridge_record_mvm_store(void *data, int32_t rawArrayId);
+
 #endif // ANALOG_MLIR_HEADERS_PYTHON_WEIGHT_BRIDGE_H
