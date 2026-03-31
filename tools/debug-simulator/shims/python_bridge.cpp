@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <dlfcn.h>
 #include <filesystem>
 #include <optional>
@@ -33,6 +34,7 @@ struct PythonApi {
   int (*PyTuple_SetItem)(PyObject *, ssize_t, PyObject *) = nullptr;
   PyObject *(*PyLong_FromLong)(long) = nullptr;
   PyObject *(*PyLong_FromVoidPtr)(void *) = nullptr;
+  int (*PyBytes_AsStringAndSize)(PyObject *, char **, ssize_t *) = nullptr;
   void (*Py_DecRef)(PyObject *) = nullptr;
 };
 
@@ -106,6 +108,8 @@ bool loadPythonApi() {
          loadSymbol(state.api, state.api.PyTuple_SetItem, "PyTuple_SetItem") &&
          loadSymbol(state.api, state.api.PyLong_FromLong, "PyLong_FromLong") &&
          loadSymbol(state.api, state.api.PyLong_FromVoidPtr, "PyLong_FromVoidPtr") &&
+         loadSymbol(state.api, state.api.PyBytes_AsStringAndSize,
+                    "PyBytes_AsStringAndSize") &&
          loadSymbol(state.api, state.api.Py_DecRef, "Py_DecRef");
 }
 
@@ -446,7 +450,47 @@ bool analog_debug_python_bridge_dispatch_layer(int32_t layerId) {
   return true;
 }
 
-bool analog_debug_python_bridge_wait_layers() { return true; }
+bool analog_debug_python_bridge_wait_layers() {
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
+    return false;
+  }
+
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *clearActiveCoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "clear_active_core");
+  if (!clearActiveCoreFn) {
+    std::fprintf(stderr, "[python bridge] core manager missing clear_active_core\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(clearActiveCoreFn, nullptr);
+  state.api.Py_DecRef(clearActiveCoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr, "[python bridge] failed to clear active core\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  state.api.Py_DecRef(result);
+  state.api.PyGILState_Release(gil);
+  return true;
+}
 
 bool analog_debug_python_bridge_record_mvm_set(void *data, int32_t rawArrayId) {
   PythonBridgeState &state = getState();
@@ -638,7 +682,117 @@ bool analog_debug_python_bridge_record_mvm_compute(int32_t rawArrayId) {
 }
 
 bool analog_debug_python_bridge_record_mvm_store(void *data, int32_t rawArrayId) {
-  (void)data;
-  (void)rawArrayId;
+  PythonBridgeState &state = getState();
+  if (!analog_debug_python_bridge_initialize()) {
+    return false;
+  }
+
+  PyGILState_STATE gil = state.api.PyGILState_Ensure();
+
+  PyObject *coreManager =
+      state.api.PyObject_CallObject(state.getCoreManagerFn, nullptr);
+  if (!coreManager) {
+    std::fprintf(stderr, "[python bridge] failed to fetch core manager\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *getOutputArrayFromCoreFn =
+      state.api.PyObject_GetAttrString(coreManager, "get_output_array_from_core");
+  if (!getOutputArrayFromCoreFn) {
+    std::fprintf(stderr,
+                 "[python bridge] core manager missing get_output_array_from_core\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *args = state.api.PyTuple_New(1);
+  if (!args) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(getOutputArrayFromCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  if (state.api.PyTuple_SetItem(args, 0,
+                                state.api.PyLong_FromLong(rawArrayId)) != 0) {
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(args);
+    state.api.Py_DecRef(getOutputArrayFromCoreFn);
+    state.api.Py_DecRef(coreManager);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *result = state.api.PyObject_CallObject(getOutputArrayFromCoreFn, args);
+  state.api.Py_DecRef(args);
+  state.api.Py_DecRef(getOutputArrayFromCoreFn);
+  state.api.Py_DecRef(coreManager);
+  if (!result) {
+    std::fprintf(stderr,
+                 "[python bridge] failed to get output array from active core\n");
+    state.api.PyErr_Print();
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *toBytesFn = state.api.PyObject_GetAttrString(result, "tobytes");
+  if (!toBytesFn) {
+    std::fprintf(stderr, "[python bridge] output array missing tobytes\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  PyObject *bytesObject = state.api.PyObject_CallObject(toBytesFn, nullptr);
+  state.api.Py_DecRef(toBytesFn);
+  if (!bytesObject) {
+    std::fprintf(stderr, "[python bridge] failed to serialize output array\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  char *bytesData = nullptr;
+  ssize_t bytesSize = 0;
+  if (state.api.PyBytes_AsStringAndSize(bytesObject, &bytesData, &bytesSize) != 0) {
+    std::fprintf(stderr, "[python bridge] failed to read output array bytes\n");
+    state.api.PyErr_Print();
+    state.api.Py_DecRef(bytesObject);
+    state.api.Py_DecRef(result);
+    state.api.PyGILState_Release(gil);
+    return false;
+  }
+
+  const float *values = reinterpret_cast<const float *>(bytesData);
+  const ssize_t valueCount = bytesSize / static_cast<ssize_t>(sizeof(float));
+  std::fprintf(stderr, "[python bridge] output array %d:", rawArrayId);
+  for (ssize_t i = 0; i < valueCount; ++i) {
+    std::fprintf(stderr, " %g", values[i]);
+  }
+  std::fprintf(stderr, "\n");
+
+  if (bytesSize > 0) {
+    std::memcpy(data, bytesData, static_cast<size_t>(bytesSize));
+  }
+
+  const long arrayRows = readEnvInt("ARRAY_ROWS", 1);
+  const float *storedData = reinterpret_cast<const float *>(data);
+  std::fprintf(stderr, "[python bridge] copied data buffer %d:", rawArrayId);
+  for (long i = 0; i < arrayRows; ++i) {
+    std::fprintf(stderr, " %g", storedData[i]);
+  }
+  std::fprintf(stderr, "\n");
+
+  state.api.Py_DecRef(bytesObject);
+
+  state.api.Py_DecRef(result);
+  state.api.PyGILState_Release(gil);
   return true;
 }

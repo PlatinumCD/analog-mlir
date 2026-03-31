@@ -103,6 +103,22 @@ class CoreManager:
 
         self.cores[self.active_core].compute(raw_array_id)
 
+    def get_output_array_from_core(self, raw_array_id):
+        if self.active_core is None:
+            raise ValueError("active core is not set")
+        if not 0 <= raw_array_id < self.arrays_per_core:
+            raise IndexError(
+                f"raw_array_id {raw_array_id} out of bounds for "
+                f"{self.arrays_per_core} arrays per core"
+            )
+
+        output = self.cores[self.active_core].store_output(raw_array_id)
+        print(
+            f"[core manager] output from active core {self.active_core}, "
+            f"array {raw_array_id}:\n{output}"
+        )
+        return output
+
     def shutdown(self):
         self._shutdown_event.set()
         for thread in self.threads:

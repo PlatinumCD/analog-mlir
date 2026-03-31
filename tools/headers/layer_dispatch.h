@@ -4,53 +4,6 @@
 #include "tensor_types.h"
 
 /*
-  analog_run_layer_2d
-
-  Synchronously executes a generated single-input layer routine that consumes a
-  rank-2 tensor and returns a rank-2 tensor result.
-*/
-extern "C" Tensor2DF32 analog_run_layer_2d(float *allocated, float *aligned,
-                                           int64_t offset, int64_t size0,
-                                           int64_t size1, int64_t stride0,
-                                           int64_t stride1, int32_t layerId);
-/*
-  analog_run_layer_3d
-
-  Synchronously executes a generated single-input layer routine that consumes a
-  rank-3 tensor and returns a rank-3 tensor result.
-*/
-extern "C" Tensor3DF32 analog_run_layer_3d(float *allocated, float *aligned,
-                                           int64_t offset, int64_t size0,
-                                           int64_t size1, int64_t size2,
-                                           int64_t stride0, int64_t stride1,
-                                           int64_t stride2, int32_t layerId);
-/*
-  analog_run_layer_4d
-
-  Synchronously executes a generated single-input layer routine that consumes a
-  rank-4 tensor and returns a rank-4 tensor result.
-*/
-extern "C" Tensor4DF32 analog_run_layer_4d(float *allocated, float *aligned,
-                                           int64_t offset, int64_t size0,
-                                           int64_t size1, int64_t size2,
-                                           int64_t size3, int64_t stride0,
-                                           int64_t stride1, int64_t stride2,
-                                           int64_t stride3, int32_t layerId);
-/*
-  analog_run_layer_5d
-
-  Synchronously executes a generated single-input layer routine that consumes a
-  rank-5 tensor and returns a rank-5 tensor result.
-*/
-extern "C" Tensor5DF32 analog_run_layer_5d(float *allocated, float *aligned,
-                                           int64_t offset, int64_t size0,
-                                           int64_t size1, int64_t size2,
-                                           int64_t size3, int64_t size4,
-                                           int64_t stride0, int64_t stride1,
-                                           int64_t stride2, int64_t stride3,
-                                           int64_t stride4, int32_t layerId);
-
-/*
   analog_dispatch_layer_2d
 
   Asynchronously dispatches a generated single-input layer routine with a
