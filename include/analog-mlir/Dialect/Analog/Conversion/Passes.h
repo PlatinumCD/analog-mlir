@@ -4,6 +4,7 @@
 namespace mlir {
 namespace analog {
 
+void registerFinalizeGolemIntrinsicsPass();
 void registerEmitRuntimeGraphPass();
 
 // Registers every Analog conversion pass exposed to textual pipelines and

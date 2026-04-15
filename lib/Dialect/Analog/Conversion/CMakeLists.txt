@@ -1,6 +1,7 @@
 add_mlir_library(MLIRAnalogConversion
   ConvertAnalogToGolemBackend.cpp
   EmitRuntimeGraph.cpp
+  FinalizeGolemIntrinsics.cpp
   Passes.cpp
   golem/GolemUtils.cpp
   golem/LowerExecute.cpp
