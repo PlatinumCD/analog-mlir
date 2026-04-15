@@ -1,17 +1,24 @@
 add_mlir_library(MLIRAnalogConversion
-  Passes.cpp
   ConvertAnalogToGolemBackend.cpp
-  ConvertAnalogToDebugShims.cpp
-  FinalizeGolemIntrinsics.cpp
+  EmitRuntimeGraph.cpp
+  Passes.cpp
+  golem/GolemUtils.cpp
+  golem/LowerExecute.cpp
+  golem/LowerMatrix.cpp
+  golem/LowerStore.cpp
+  golem/LowerVector.cpp
 
   LINK_LIBS PUBLIC
   AnalogIR
   MLIRArithDialect
   MLIRBufferizationDialect
   MLIRFuncDialect
+  MLIRFuncTransforms
   MLIRIR
+  MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRSCFDialect
   MLIRTensorDialect
   MLIRTransforms
 )

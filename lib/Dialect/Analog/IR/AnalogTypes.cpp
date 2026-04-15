@@ -1,18 +1,21 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Casting.h"
-#include <cstdint>
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/OpAsmSupport.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/OpAsmSupport.h"
+#include "mlir/IR/OpImplementation.h"
 #include "mlir/Support/LogicalResult.h"
+
+#include <cstdint>
 
 #define DEBUG_TYPE "analog-types"
 
@@ -22,16 +25,17 @@ using namespace mlir::analog;
 #define GET_TYPEDEF_CLASSES
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.cpp.inc"
 
-void AnalogDialect::registerTypes()
-{
-    addTypes<
+// Registers the TableGen-generated type classes with the analog dialect.
+void AnalogDialect::registerTypes() {
+  addTypes<
 #define GET_TYPEDEF_LIST
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.cpp.inc"
-        >();
+      >();
 }
 
 namespace {
 
+// Checks the rank and element-type contract for matrix/vector containers.
 mlir::LogicalResult verifyRank2FloatContainerType(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> shape, mlir::Type elementType) {
@@ -47,6 +51,52 @@ mlir::LogicalResult verifyRank2FloatContainerType(
   return mlir::success();
 }
 
+// Checks the concrete payload carried by task resources across tensors/memrefs.
+mlir::LogicalResult verifyPayloadRankAndElementType(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<int64_t> shape, mlir::Type elementType,
+    llvm::StringRef kind) {
+  if (shape.empty() || shape.size() > 5)
+    return emitError() << "expected " << kind
+                       << " payload rank between 1 and 5";
+
+  if (llvm::any_of(shape, [](int64_t dim) { return dim <= 0; }))
+    return emitError() << "expected static positive " << kind
+                       << " payload shape";
+
+  if (!llvm::isa<mlir::Float32Type>(elementType))
+    return emitError() << "expected f32 " << kind << " payload type";
+
+  return mlir::success();
+}
+
+// Restricts graph resource slots to float scalars or static f32 tensor/memrefs.
+mlir::LogicalResult verifyTaskResourcePayloadType(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::Type valueType) {
+  if (llvm::isa<mlir::analog::RuntimeHandleType>(valueType))
+    return mlir::success();
+
+  if (llvm::isa<mlir::FloatType>(valueType))
+    return mlir::success();
+
+  if (auto rankedTensorType = llvm::dyn_cast<mlir::RankedTensorType>(valueType))
+    return verifyPayloadRankAndElementType(
+        emitError, rankedTensorType.getShape(),
+        rankedTensorType.getElementType(), "tensor");
+
+  if (auto memRefType = llvm::dyn_cast<mlir::MemRefType>(valueType)) {
+    if (!memRefType.hasStaticShape())
+      return emitError() << "expected static memref payload type";
+    return verifyPayloadRankAndElementType(
+        emitError, memRefType.getShape(), memRefType.getElementType(), "memref");
+  }
+
+  return emitError() << "expected runtime handle, float scalar, ranked tensor, "
+                        "or memref payload type";
+}
+
+// Parses the compact shape-and-element spelling shared by matrix and vector.
 mlir::ParseResult parseShapeAndEltImpl(mlir::AsmParser &parser,
                                        llvm::SmallVector<int64_t> &shape,
                                        mlir::Type &elementType) {
@@ -70,12 +120,26 @@ mlir::ParseResult parseShapeAndEltImpl(mlir::AsmParser &parser,
   return mlir::success();
 }
 
+// Emits the compact shape-and-element spelling shared by matrix and vector.
 void printShapeAndEltImpl(mlir::AsmPrinter &printer, llvm::ArrayRef<int64_t> shape,
                           mlir::Type elementType) {
-  for (auto d : shape)
-    printer << d << 'x';
+  for (int64_t dim : shape)
+    printer << dim << 'x';
 
   printer.printType(elementType);
+}
+
+// Prints tiled container views with a common grid/array-shape prefix.
+void printTiledContainerType(mlir::AsmPrinter &printer,
+                             llvm::ArrayRef<int64_t> gridShape,
+                             llvm::ArrayRef<int64_t> arrayShape,
+                             mlir::Type containerType) {
+  printer << "grid_shape=[";
+  llvm::interleaveComma(gridShape, printer);
+  printer << "], array_shape=[";
+  llvm::interleaveComma(arrayShape, printer);
+  printer << "], ";
+  printer.printType(containerType);
 }
 
 } // namespace
@@ -84,11 +148,10 @@ void printShapeAndEltImpl(mlir::AsmPrinter &printer, llvm::ArrayRef<int64_t> sha
 // MatrixType - verify
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult
-mlir::analog::MatrixType::verify(
+// Enforces the analog matrix contract before uniquing the type storage.
+mlir::LogicalResult mlir::analog::MatrixType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType) {
+    llvm::ArrayRef<int64_t> shape, mlir::Type elementType) {
   return verifyRank2FloatContainerType(emitError, shape, elementType);
 }
 
@@ -96,8 +159,8 @@ mlir::analog::MatrixType::verify(
 // MatrixType - parseShapeAndElt
 //===----------------------------------------------------------------------===//
 
-mlir::ParseResult
-mlir::analog::MatrixType::parseShapeAndElt(
+// Parses the matrix payload shape and element type from custom assembly.
+mlir::ParseResult mlir::analog::MatrixType::parseShapeAndElt(
     mlir::AsmParser &parser,
     llvm::SmallVector<int64_t> &shape,
     mlir::Type &elementType) {
@@ -108,8 +171,8 @@ mlir::analog::MatrixType::parseShapeAndElt(
 // MatrixType - printShapeAndElt
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::MatrixType::printShapeAndElt(
+// Prints the matrix payload shape and element type for custom assembly.
+void mlir::analog::MatrixType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
@@ -120,14 +183,13 @@ mlir::analog::MatrixType::printShapeAndElt(
 // MatrixType - parse
 //===----------------------------------------------------------------------===//
 
-mlir::Type
-mlir::analog::MatrixType::parse(mlir::AsmParser &parser) {
+// Builds a matrix type from the payload inside the dialect mnemonic wrapper.
+mlir::Type mlir::analog::MatrixType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
 
-  // Parse 8x8xf32
   if (parseShapeAndElt(parser, shape, elementType))
-    return Type();
+    return {};
 
   return get(parser.getContext(), shape, elementType);
 }
@@ -136,24 +198,19 @@ mlir::analog::MatrixType::parse(mlir::AsmParser &parser) {
 // MatrixType - print
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::MatrixType::print(mlir::AsmPrinter &printer) const {
+// Emits the matrix payload expected inside the dialect mnemonic wrapper.
+void mlir::analog::MatrixType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
 }
-
-
-
-
 
 //===----------------------------------------------------------------------===//
 // VectorType - verify
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult
-mlir::analog::VectorType::verify(
+// Enforces the analog vector contract before uniquing the type storage.
+mlir::LogicalResult mlir::analog::VectorType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType) {
+    llvm::ArrayRef<int64_t> shape, mlir::Type elementType) {
   return verifyRank2FloatContainerType(emitError, shape, elementType);
 }
 
@@ -161,8 +218,8 @@ mlir::analog::VectorType::verify(
 // VectorType - parseShapeAndElt
 //===----------------------------------------------------------------------===//
 
-mlir::ParseResult
-mlir::analog::VectorType::parseShapeAndElt(
+// Parses the vector payload shape and element type from custom assembly.
+mlir::ParseResult mlir::analog::VectorType::parseShapeAndElt(
     mlir::AsmParser &parser,
     llvm::SmallVector<int64_t> &shape,
     mlir::Type &elementType) {
@@ -173,8 +230,8 @@ mlir::analog::VectorType::parseShapeAndElt(
 // VectorType - printShapeAndElt
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::VectorType::printShapeAndElt(
+// Prints the vector payload shape and element type for custom assembly.
+void mlir::analog::VectorType::printShapeAndElt(
     mlir::AsmPrinter &printer,
     llvm::ArrayRef<int64_t> shape,
     mlir::Type elementType) {
@@ -185,14 +242,13 @@ mlir::analog::VectorType::printShapeAndElt(
 // VectorType - parse
 //===----------------------------------------------------------------------===//
 
-mlir::Type
-mlir::analog::VectorType::parse(mlir::AsmParser &parser) {
+// Builds a vector type from the payload inside the dialect mnemonic wrapper.
+mlir::Type mlir::analog::VectorType::parse(mlir::AsmParser &parser) {
   SmallVector<int64_t> shape;
   Type elementType;
 
-  // Parse 1x8xf32
   if (parseShapeAndElt(parser, shape, elementType))
-    return Type();
+    return {};
 
   return get(parser.getContext(), shape, elementType);
 }
@@ -201,27 +257,54 @@ mlir::analog::VectorType::parse(mlir::AsmParser &parser) {
 // VectorType - print
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::VectorType::print(mlir::AsmPrinter &printer) const {
+// Emits the vector payload expected inside the dialect mnemonic wrapper.
+void mlir::analog::VectorType::print(mlir::AsmPrinter &printer) const {
   printShapeAndElt(printer, getShape(), getElementType());
 }
 
+//===----------------------------------------------------------------------===//
+// TaskResourceType - verify
+//===----------------------------------------------------------------------===//
 
+// Accepts only payload types that task graph resources can safely carry.
+mlir::LogicalResult mlir::analog::TaskResourceType::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::Type valueType) {
+  return verifyTaskResourcePayloadType(emitError, valueType);
+}
 
+//===----------------------------------------------------------------------===//
+// TaskResourceType - parse
+//===----------------------------------------------------------------------===//
 
+// Builds a resource handle type around its parsed payload type.
+mlir::Type mlir::analog::TaskResourceType::parse(mlir::AsmParser &parser) {
+  mlir::Type valueType;
+  if (parser.parseType(valueType))
+    return {};
 
+  return get(parser.getContext(), valueType);
+}
+
+//===----------------------------------------------------------------------===//
+// TaskResourceType - print
+//===----------------------------------------------------------------------===//
+
+// Emits only the payload because the dialect printer owns the resource wrapper.
+void mlir::analog::TaskResourceType::print(mlir::AsmPrinter &printer) const {
+  printer.printType(getValueType());
+}
 
 //===----------------------------------------------------------------------===//
 // MatrixGridType - verify
 //===----------------------------------------------------------------------===//
 
-llvm::LogicalResult
-mlir::analog::MatrixGridType::verify(
+// Validates the tiled matrix view metadata and its underlying matrix container.
+mlir::LogicalResult mlir::analog::MatrixGridType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> gridShape,
     llvm::ArrayRef<int64_t> arrayShape,
     mlir::analog::MatrixType matrix) {
-
   if (arrayShape.size() != 2) {
     return emitError() << "array_shape must have exactly 2 dimensions";
   }
@@ -235,13 +318,6 @@ mlir::analog::MatrixGridType::verify(
     return emitError() << "matrix must be rank-2";
   }
 
-/*  // Optional but sane invariant
-  if (matrixShape[0] % arrayShape[0] != 0 ||
-      matrixShape[1] % arrayShape[1] != 0) {
-    return emitError() << "matrix shape must be divisible by array_shape";
-  }
-*/
-
   return mlir::success();
 }
 
@@ -249,117 +325,109 @@ mlir::analog::MatrixGridType::verify(
 // MatrixGridType - parse
 //===----------------------------------------------------------------------===//
 
-mlir::Type
-mlir::analog::MatrixGridType::parse(mlir::AsmParser &parser) {
+// Builds a tiled matrix-grid view from its custom assembly payload.
+mlir::Type mlir::analog::MatrixGridType::parse(mlir::AsmParser &parser) {
   llvm::SmallVector<int64_t> gridShape;
   llvm::SmallVector<int64_t> arrayShape;
   mlir::Type matrixType;
 
+  // Parse the wrapper and grid-shape segment before the array metadata.
   if (parser.parseLess()) {
-    return Type();
+    return {};
   }
 
-  // grid shape
   if (parser.parseKeyword("grid_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
-    return Type();
+    return {};
   }
 
   int64_t gridDim;
   if (parser.parseInteger(gridDim)) {
-    return Type();
+    return {};
   }
   gridShape.push_back(gridDim);
 
   while (succeeded(parser.parseOptionalComma())) {
     if (parser.parseInteger(gridDim)) {
-      return Type();
+      return {};
     }
     gridShape.push_back(gridDim);
   }
 
   if (parser.parseRSquare()) {
-    return Type();
+    return {};
   }
 
   if (parser.parseComma()) {
-    return Type();
+    return {};
   }
 
-  // array shape
+  // Parse the array-shape segment using the same bracketed form.
   if (parser.parseKeyword("array_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
-    return Type();
+    return {};
   }
 
   int64_t arrayDim;
   if (parser.parseInteger(arrayDim)) {
-    return Type();
+    return {};
   }
   arrayShape.push_back(arrayDim);
 
   while (succeeded(parser.parseOptionalComma())) {
     if (parser.parseInteger(arrayDim)) {
-      return Type();
+      return {};
     }
     arrayShape.push_back(arrayDim);
   }
 
   if (parser.parseRSquare()) {
-    return Type();
+    return {};
   }
 
   if (parser.parseComma()) {
-    return Type();
+    return {};
   }
 
+  // Finish with the nested matrix type and reject other payload kinds.
   if (parser.parseType(matrixType)) {
-    return Type();
+    return {};
   }
 
   if (parser.parseGreater()) {
-    return Type();
+    return {};
   }
 
   auto matrix = llvm::dyn_cast<mlir::analog::MatrixType>(matrixType);
   if (!matrix) {
     parser.emitError(parser.getCurrentLocation(), "expected analog.matrix type");
-    return Type();
+    return {};
   }
 
   return get(parser.getContext(), gridShape, arrayShape, matrix);
 }
 
-
 //===----------------------------------------------------------------------===//
 // MatrixGridType - print
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::MatrixGridType::print(mlir::AsmPrinter &printer) const {
-  printer << "grid_shape=[";
-  llvm::interleaveComma(getGridShape(), printer);
-  printer << "], array_shape=[";
-  llvm::interleaveComma(getArrayShape(), printer);
-  printer << "], ";
-  printer.printType(getMatrix());
+// Emits the tiled matrix-grid payload expected by the custom parser.
+void mlir::analog::MatrixGridType::print(mlir::AsmPrinter &printer) const {
+  printTiledContainerType(printer, getGridShape(), getArrayShape(), getMatrix());
 }
-
-
 
 //===----------------------------------------------------------------------===//
 // VectorSliceType - verify
 //===----------------------------------------------------------------------===//
 
-llvm::LogicalResult
-mlir::analog::VectorSliceType::verify(
+// Validates vector-slice metadata and its underlying vector container.
+mlir::LogicalResult mlir::analog::VectorSliceType::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     llvm::ArrayRef<int64_t> gridShape,
     llvm::ArrayRef<int64_t> arrayShape,
     mlir::analog::VectorType vector) {
-
   if (gridShape.size() != 2) {
     return emitError() << "grid_shape must be 2-dimensional";
   }
@@ -367,7 +435,6 @@ mlir::analog::VectorSliceType::verify(
   if (gridShape[0] <= 0 || gridShape[1] <= 0) {
     return emitError() << "grid_shape dimension must be positive";
   }
-
 
   if (arrayShape.size() != 2) {
     return emitError() << "array_shape must be 2-dimensional";
@@ -386,101 +453,89 @@ mlir::analog::VectorSliceType::verify(
     return emitError() << "vector must have leading dimension 1";
   }
 
-/*
-  if (vecShape[1] % arrayShape[0] != 0) {
-    return emitError() << "vector length must be divisible by array_shape";
-  }
-*/
-
   return mlir::success();
 }
-
 
 //===----------------------------------------------------------------------===//
 // VectorSliceType - parse
 //===----------------------------------------------------------------------===//
 
-mlir::Type
-mlir::analog::VectorSliceType::parse(mlir::AsmParser &parser) {
+// Builds a tiled vector-slice view from its custom assembly payload.
+mlir::Type mlir::analog::VectorSliceType::parse(mlir::AsmParser &parser) {
   llvm::SmallVector<int64_t> gridShape;
   llvm::SmallVector<int64_t> arrayShape;
   mlir::Type vectorType;
 
+  // Parse the wrapper and grid-shape segment before the array metadata.
   if (parser.parseLess()) {
-    return Type();
+    return {};
   }
 
-  // grid shape
   if (parser.parseKeyword("grid_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
-    return Type();
+    return {};
   }
 
   int64_t gridDim;
   if (parser.parseInteger(gridDim)) {
-    return Type();
+    return {};
   }
   gridShape.push_back(gridDim);
 
   if (parser.parseRSquare()) {
-    return Type();
+    return {};
   }
 
   if (parser.parseComma()) {
-    return Type();
+    return {};
   }
-  
-  // array shape
+
+  // Parse the array-shape segment before the nested vector type.
   if (parser.parseKeyword("array_shape") ||
       parser.parseEqual() ||
       parser.parseLSquare()) {
-    return Type();
+    return {};
   }
 
   int64_t arrayDim;
   if (parser.parseInteger(arrayDim)) {
-    return Type();
+    return {};
   }
   arrayShape.push_back(arrayDim);
 
   if (parser.parseRSquare()) {
-    return Type();
+    return {};
   }
 
   if (parser.parseComma()) {
-    return Type();
+    return {};
   }
 
+  // Finish with the nested vector type and reject other payload kinds.
   if (parser.parseType(vectorType)) {
-    return Type();
+    return {};
   }
 
   if (parser.parseGreater()) {
-    return Type();
+    return {};
   }
 
   auto vector = llvm::dyn_cast<mlir::analog::VectorType>(vectorType);
   if (!vector) {
     parser.emitError(parser.getCurrentLocation(),
                      "expected analog.vector type");
-    return Type();
+    return {};
   }
 
   return get(parser.getContext(), gridShape, arrayShape, vector);
 }
 
-
 //===----------------------------------------------------------------------===//
 // VectorSliceType - print
 //===----------------------------------------------------------------------===//
 
-void
-mlir::analog::VectorSliceType::print(mlir::AsmPrinter &printer) const {
-  printer << "grid_shape=[";
-  llvm::interleaveComma(getGridShape(), printer);
-  printer << "], array_shape=[";
-  llvm::interleaveComma(getArrayShape(), printer);
-  printer << "], ";
-  printer.printType(getVector());
+// Emits the tiled vector-slice payload expected by the custom parser.
+void mlir::analog::VectorSliceType::print(mlir::AsmPrinter &printer) const {
+  printTiledContainerType(printer, getGridShape(), getArrayShape(), getVector());
 }

@@ -1,62 +1,18 @@
 #include "analog-mlir/Dialect/Analog/Transforms/Passes.h"
-#include "analog-mlir/Dialect/Analog/Transforms/IdentifyRecurrentPatterns.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNForAnalog.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PrepareRNNCellForAnalog.h"
-#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv1DToMatmul.h"
-#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv2DToMatmul.h"
-#include "analog-mlir/Dialect/Analog/Transforms/RewriteGroupedConv2DToMatmul.h"
-#include "analog-mlir/Dialect/Analog/Transforms/RewriteConv3DToMatmul.h"
-#include "analog-mlir/Dialect/Analog/Transforms/MaterializeMatrixFromTensor.h"
-#include "analog-mlir/Dialect/Analog/Transforms/MaterializeVectorFromTensor.h"
-#include "analog-mlir/Dialect/Analog/Transforms/IsolateLayers.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PartitionMatrix.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PartitionVector.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceMatrices.h"
-#include "analog-mlir/Dialect/Analog/Transforms/PlaceVectors.h"
-
-#include "analog-mlir/Dialect/Analog/Transforms/GroupedPasses.h"
-
-#include "analog-mlir/Dialect/Analog/Transforms/ExecuteArray.h"
-#include "analog-mlir/Dialect/Analog/Transforms/DispatchLayers.h"
-#include "analog-mlir/Dialect/Analog/Transforms/DispatchWeights.h"
-#include "analog-mlir/Dialect/Analog/Transforms/ReduceResults.h"
-#include "analog-mlir/Dialect/Analog/Transforms/ReplaceMatmul.h"
-
-#include <mlir/Pass/PassRegistry.h>
-
+#include "analog-mlir/Dialect/Analog/Transforms/AssembleTaskGraph.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ConvertLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/ExtractLayers.h"
+#include "analog-mlir/Dialect/Analog/Transforms/IsolateWeights.h"
 
 namespace mlir {
 namespace analog {
 
+// Registers the transform pass bundle exposed by this library entry point.
 void registerAnalogPasses() {
-
-  // Leaf passes ONLY
-  PassRegistration<IdentifyRecurrentPatternsPass>();
-  PassRegistration<PrepareRNNForAnalogPass>();
-  PassRegistration<PrepareRNNCellForAnalogPass>();
-  PassRegistration<RewriteConv1DToMatmulPass>();
-  PassRegistration<RewriteConv2DToMatmulPass>();
-  PassRegistration<RewriteGroupedConv2DToMatmulPass>();
-  PassRegistration<RewriteConv3DToMatmulPass>();
-  PassRegistration<MaterializeMatrixFromTensorPass>();
-  PassRegistration<MaterializeVectorFromTensorPass>();
-  PassRegistration<IsolateLayersPass>();
-  PassRegistration<PartitionMatrixPass>();
-  PassRegistration<PartitionVectorPass>();
-  PassRegistration<PlaceMatricesPass>();
-  PassRegistration<PlaceVectorsPass>();
-  PassRegistration<ExecuteArrayPass>();
-  PassRegistration<DispatchLayersPass>();
-  PassRegistration<DispatchWeightsPass>();
-  PassRegistration<ReduceResultsPass>();
-  PassRegistration<ReplaceMatmulPass>();
-  
-  // Pipelines
-  registerRewriteConvToMatmulPipeline();
-  registerRewriteRecurrentToMatmulPipeline();
-  registerMaterializeAndPlacePipeline();
-  registerExecuteAndReplacePipeline();
-  registerDispatchRuntimePipeline();
+  registerAssembleTaskGraphPass();
+  registerConvertLayersPass();
+  registerExtractLayersPass();
+  registerIsolateWeightsPass();
 }
 
 } // namespace analog

@@ -4,11 +4,13 @@
 namespace mlir {
 namespace analog {
 
+void registerEmitRuntimeGraphPass();
+
+// Registers every Analog conversion pass exposed to textual pipelines and
+// pass managers.
 void registerAnalogConversionPasses();
-void registerLowerToGolemPipeline();
-void registerLowerToDebugShimsPipeline();
 
 } // namespace analog
 } // namespace mlir
 
-#endif
+#endif // ANALOG_MLIR_DIALECT_ANALOG_CONVERSION_PASSES_H

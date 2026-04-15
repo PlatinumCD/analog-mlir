@@ -1,42 +1,32 @@
 add_mlir_library(MLIRAnalogTransforms
   Passes.cpp
-  LayerKinds.cpp
-  OutliningUtils.cpp
-  RegionUtils.cpp
-  SourceTrackingUtils.cpp
-  TensorConstantUtils.cpp
-  IdentifyRecurrentPatterns.cpp
-  PrepareRNNForAnalog.cpp
-  PrepareRNNCellForAnalog.cpp
-  RewriteConv1DToMatmul.cpp
-  RewriteConv2DToMatmul.cpp
-  RewriteGroupedConv2DToMatmul.cpp
-  RewriteConv3DToMatmul.cpp
-  MaterializeMatrixFromTensor.cpp
-  MaterializeVectorFromTensor.cpp
-  IsolateLayers.cpp
-  PartitionMatrix.cpp
-  PartitionVector.cpp
-  PlaceMatrices.cpp
-  PlaceVectors.cpp
-
-  ExecuteArray.cpp
-  DispatchLayers.cpp
-  DispatchWeights.cpp
-  ReduceResults.cpp
-  ReplaceMatmul.cpp
-
-  GroupedPasses.cpp
-
-  DEPENDS
-  MLIRFuncDialect
-  MLIRArithDialect
-  MLIRSCFDialect
+  AssembleTaskGraph.cpp
+  ConvertLayers.cpp
+  ExtractLayers.cpp
+  IsolateWeights.cpp
+  assemblers/ForwardTaskOutliner.cpp
+  assemblers/TaskGraphExecutionPlanAssembler.cpp
+  assemblers/TaskGraphGeneratorAssembler.cpp
+  assemblers/TaskGraphResourceAssembler.cpp
+  assemblers/TaskGraphTaskAssembler.cpp
+  optimizers/CoreScheduleLinearOptimizer.cpp
+  optimizers/FrontloadWeightTasksOptimizer.cpp
+  converters/ConverterUtils.cpp
+  converters/Conv1DConverter.cpp
+  converters/Conv2DConverter.cpp
+  converters/Conv2DGroupedConverter.cpp
+  converters/Conv3DConverter.cpp
+  converters/LinearConverter.cpp
+  converters/RNNCellConverter.cpp
+  extractors/LinearExtractor.cpp
+  extractors/Conv1DExtractor.cpp
+  extractors/Conv2DExtractor.cpp
+  extractors/Conv2DGroupedExtractor.cpp
+  extractors/Conv3DExtractor.cpp
+  extractors/RNNCellExtractor.cpp
 
   LINK_LIBS PUBLIC
+  AnalogIR
   MLIRIR
   MLIRPass
-  MLIRFuncDialect
-  MLIRArithDialect
-  MLIRSCFDialect
 )

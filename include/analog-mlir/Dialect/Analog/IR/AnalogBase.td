@@ -17,14 +17,12 @@ def Analog_Dialect : Dialect {
   }];
 }
 
-
 class Analog_Type<string name, string mnem, list<Trait> traits = []>
     : TypeDef<Analog_Dialect, name, traits> {
   let mnemonic = mnem;
 }
 
-
-class Analog_Op<string mnem, list<Trait>traits = []>
+class Analog_Op<string mnem, list<Trait> traits = []>
     : Op<Analog_Dialect, mnem, traits> {
   let hasCustomAssemblyFormat = 0;
 }

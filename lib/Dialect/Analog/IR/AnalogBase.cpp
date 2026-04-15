@@ -1,10 +1,11 @@
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h"
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h"
 
-#include <llvm/ADT/TypeSwitch.h>
-#include <llvm/Support/Casting.h>
-#include <mlir/IR/DialectImplementation.h>
-#include <mlir/Support/LogicalResult.h>
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
+
+#include "mlir/IR/DialectImplementation.h"
+#include "mlir/Support/LogicalResult.h"
 
 #define DEBUG_TYPE "analog-base"
 
@@ -15,19 +16,64 @@ using namespace mlir::analog;
 
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.cpp.inc"
 
+namespace {
+
+// Parses the resource wrapper while leaving payload validation to the type.
+Type parseTaskResourceType(DialectAsmParser &parser) {
+  if (parser.parseLess())
+    return {};
+
+  Type valueType;
+  if (parser.parseType(valueType) || parser.parseGreater())
+    return {};
+
+  return TaskResourceType::get(parser.getContext(), valueType);
+}
+
+// Prints analog types whose payload printers already emit the inner syntax.
+template <typename TypeT>
+bool printParameterizedType(Type type, DialectAsmPrinter &printer) {
+  auto analogType = llvm::dyn_cast<TypeT>(type);
+  if (!analogType)
+    return false;
+
+  printer << TypeT::getMnemonic() << "<";
+  analogType.print(printer);
+  printer << ">";
+  return true;
+}
+
+} // namespace
+
+// Installs the analog types and operations when the dialect is loaded.
 void AnalogDialect::initialize() {
   registerTypes();
   registerOps();
 }
 
+// Dispatches each analog type mnemonic to the parser that owns its payload.
 Type AnalogDialect::parseType(DialectAsmParser &parser) const {
   StringRef mnemonic;
   if (parser.parseKeyword(&mnemonic))
     return {};
 
+  // Handle task graph handles and resources before container-specific parsing.
+  if (mnemonic == TaskGraphType::getMnemonic())
+    return TaskGraphType::get(parser.getContext());
+
+  if (mnemonic == TaskType::getMnemonic())
+    return TaskType::get(parser.getContext());
+
+  if (mnemonic == RuntimeHandleType::getMnemonic())
+    return RuntimeHandleType::get(parser.getContext());
+
+  if (mnemonic == TaskResourceType::getMnemonic())
+    return parseTaskResourceType(parser);
+
   if (parser.parseLess())
     return {};
 
+  // Delegate parameter parsing to the matched container or view type.
   Type result;
   if (mnemonic == MatrixType::getMnemonic()) {
     result = MatrixType::parse(parser);
@@ -49,32 +95,36 @@ Type AnalogDialect::parseType(DialectAsmParser &parser) const {
   return result;
 }
 
+// Emits the assembly spelling for every analog type owned by the dialect.
 void AnalogDialect::printType(Type type,
                               DialectAsmPrinter &printer) const {
-  if (auto w = llvm::dyn_cast<MatrixType>(type)) {
-    printer << MatrixType::getMnemonic() << "<";
-    w.print(printer);
-    printer << ">";
+  // Share the mnemonic<...> wrapper across container and view types.
+  if (printParameterizedType<MatrixType>(type, printer) ||
+      printParameterizedType<VectorType>(type, printer) ||
+      printParameterizedType<MatrixGridType>(type, printer) ||
+      printParameterizedType<VectorSliceType>(type, printer)) {
     return;
   }
 
-  if (auto w = llvm::dyn_cast<VectorType>(type)) {
-    printer << VectorType::getMnemonic() << "<";
-    w.print(printer);
-    printer << ">";
+  // Task graph handles either print as bare mnemonics or a wrapped payload type.
+  if (llvm::isa<TaskGraphType>(type)) {
+    printer << TaskGraphType::getMnemonic();
     return;
   }
 
-  if (auto w = llvm::dyn_cast<MatrixGridType>(type)) {
-    printer << MatrixGridType::getMnemonic() << "<";
-    w.print(printer);
-    printer << ">";
+  if (llvm::isa<TaskType>(type)) {
+    printer << TaskType::getMnemonic();
     return;
   }
 
-  if (auto w = llvm::dyn_cast<VectorSliceType>(type)) {
-    printer << VectorSliceType::getMnemonic() << "<";
-    w.print(printer);
+  if (llvm::isa<RuntimeHandleType>(type)) {
+    printer << RuntimeHandleType::getMnemonic();
+    return;
+  }
+
+  if (auto resourceType = llvm::dyn_cast<TaskResourceType>(type)) {
+    printer << TaskResourceType::getMnemonic() << "<";
+    printer.printType(resourceType.getValueType());
     printer << ">";
     return;
   }

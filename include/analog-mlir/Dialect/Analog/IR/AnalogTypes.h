@@ -7,8 +7,9 @@
 
 //===- Generated includes -------------------------------------------------===//
 
+// Exposes the TableGen-generated type classes for analog containers,
+// tiled array views, and task-graph handles/resources.
 #define GET_TYPEDEF_CLASSES
 #include "analog-mlir/Dialect/Analog/IR/AnalogTypes.h.inc"
 
 #endif // ANALOG_MLIR_DIALECT_ANALOG_IR_ANALOGTYPES_H
-

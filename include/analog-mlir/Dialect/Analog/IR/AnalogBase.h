@@ -6,4 +6,6 @@
 
 //===- Generated includes -------------------------------------------------===//
 
+// Exposes the TableGen-generated base dialect declarations used by the hand
+// written analog IR headers and definitions.
 #include "analog-mlir/Dialect/Analog/IR/AnalogBase.h.inc"

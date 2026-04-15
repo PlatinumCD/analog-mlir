@@ -1,10 +1,10 @@
 #ifndef ANALOG_OPS_TD
 #define ANALOG_OPS_TD
 
-include "mlir/IR/OpBase.td"
-include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonAttrConstraints.td"
+include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===- AnalogOps.td -------------------------------------------------------===//
 //
@@ -40,13 +40,13 @@ def Analog_MatrixFromTensorOp
 
 //===----------------------------------------------------------------------===//
 // analog.matrix.partition
-// Create an analog array grid from matrix
+// Create an analog array grid from a matrix
 //===----------------------------------------------------------------------===//
 
 def Analog_MatrixPartitionOp
     : Analog_Op<"matrix.partition"> {
 
-  let summary = "Create a array partition view over an analog matrix";
+  let summary = "Create an array partition view over an analog matrix";
 
   let description = [{
     Declares that an analog matrix tensor is realized as a grid of
@@ -70,13 +70,13 @@ def Analog_MatrixPartitionOp
 
 //===----------------------------------------------------------------------===//
 // analog.array.matrix.place
-// Place analog partition into accelerator 
+// Place an analog partition into the accelerator
 //===----------------------------------------------------------------------===//
 
 def Analog_ArrayMatrixPlaceOp
     : Analog_Op<"array.matrix.place"> {
 
-  let summary = "Place an analog partition into accelerator";
+  let summary = "Place an analog partition into the accelerator";
 
   let description = [{
     Given a grid of analog arrays, this op places a single array.
@@ -92,10 +92,9 @@ def Analog_ArrayMatrixPlaceOp
   let assemblyFormat = [{
     $input `[` $rowIndex `,` $colIndex `]` `,` `array` `[` $indices `]`
     attr-dict
-    `:` qualified(type($input)) 
+    `:` qualified(type($input))
   }];
 }
-
 
 //===----------------------------------------------------------------------===//
 // analog.vector.from_tensor
@@ -122,16 +121,16 @@ def Analog_VectorFromTensorOp
 
 //===----------------------------------------------------------------------===//
 // analog.vector.partition
-// Create an analog varray slice from a vector
+// Create an analog vector-array slice from a vector
 //===----------------------------------------------------------------------===//
 
 def Analog_VectorPartitionOp
     : Analog_Op<"vector.partition"> {
 
-  let summary = "Partition an analog vector into slices.";
+  let summary = "Partition an analog vector into slices";
 
   let description = [{
-    create an analog vector partition view for tiling
+    Creates an analog vector partition view for tiling.
   }];
 
   let arguments = (ins
@@ -148,16 +147,15 @@ def Analog_VectorPartitionOp
   }];
 }
 
-
 //===----------------------------------------------------------------------===//
 // analog.array.vector.place
-// Set the varray in the accelerator
+// Place a vector-array slice in the accelerator
 //===----------------------------------------------------------------------===//
 
 def Analog_ArrayVectorPlaceOp
   : Analog_Op<"array.vector.place"> {
 
-  let summary = "Place an analog varray into an accelerator";
+  let summary = "Place an analog vector-array slice into an accelerator";
 
   let arguments = (ins
     Analog_VectorSliceType:$input,
@@ -168,20 +166,176 @@ def Analog_ArrayVectorPlaceOp
   let assemblyFormat = [{
     $input `[` $sliceIndex `]` `,` `array` `[` $indices `]`
     attr-dict
-    `:` qualified(type($input)) 
+    `:` qualified(type($input))
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// analog.task_graph.create
+// Create a task graph handle
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskGraphCreateOp
+  : Analog_Op<"task_graph.create"> {
+
+  let summary = "Create an analog task graph handle";
+
+  let results = (outs
+    Analog_TaskGraphType:$result
+  );
+
+  let assemblyFormat = [{
+    attr-dict `:` qualified(type($result))
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.task_graph.input
+// Create a graph input resource handle
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskGraphInputOp
+  : Analog_Op<"task_graph.input"> {
+
+  let summary = "Create a graph input resource handle";
+
+  let arguments = (ins
+    Analog_TaskGraphType:$graph
+  );
+
+  let results = (outs
+    Analog_TaskResourceType:$result
+  );
+
+  let assemblyFormat = [{
+    $graph attr-dict `:` qualified(type($graph)) `->` qualified(type($result))
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.task_graph.output
+// Create a graph output resource handle
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskGraphOutputOp
+  : Analog_Op<"task_graph.output"> {
+
+  let summary = "Create a graph output resource handle";
+
+  let arguments = (ins
+    Analog_TaskGraphType:$graph
+  );
+
+  let results = (outs
+    Analog_TaskResourceType:$result
+  );
+
+  let assemblyFormat = [{
+    $graph attr-dict `:` qualified(type($graph)) `->` qualified(type($result))
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.task_graph.temporary
+// Create an internal graph temporary resource handle
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskGraphTemporaryOp
+  : Analog_Op<"task_graph.temporary"> {
+
+  let summary = "Create an internal graph temporary resource handle";
+
+  let arguments = (ins
+    Analog_TaskGraphType:$graph
+  );
+
+  let results = (outs
+    Analog_TaskResourceType:$result
+  );
+
+  let assemblyFormat = [{
+    $graph attr-dict `:` qualified(type($graph)) `->` qualified(type($result))
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.task_graph.persistent
+// Create a graph persistent resource handle
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskGraphPersistentOp
+  : Analog_Op<"task_graph.persistent"> {
+
+  let summary = "Create a graph persistent resource handle";
+
+  let arguments = (ins
+    Analog_TaskGraphType:$graph
+  );
+
+  let results = (outs
+    Analog_TaskResourceType:$result
+  );
+
+  let assemblyFormat = [{
+    $graph attr-dict `:` qualified(type($graph)) `->` qualified(type($result))
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// analog.task.create
+// Create a task node in a task graph
+//===----------------------------------------------------------------------===//
+
+def Analog_TaskCreateOp
+  : Analog_Op<"task.create"> {
+
+  let summary = "Create a task in an analog task graph";
+
+  let description = [{
+    Creates one task node associated with a task graph. The task records the
+    callee it will invoke, its layer type, its explicit dependencies, and
+    whether it runs in the analog or digital domain.
+  }];
+
+  let arguments = (ins
+    Analog_TaskGraphType:$graph,
+    FlatSymbolRefAttr:$callee,
+    StrAttr:$domain,
+    OptionalAttr<StrAttr>:$layerType,
+    Variadic<Analog_TaskResourceType>:$inputs,
+    Variadic<Analog_TaskResourceType>:$outputs,
+    Variadic<Analog_TaskType>:$dependencies
+  );
+
+  let results = (outs
+    Analog_TaskType:$result
+  );
+
+  let hasVerifier = 1;
+  let traits = [AttrSizedOperandSegments];
+
+  let assemblyFormat = [{
+    $graph `,` $callee `,` `domain` `=` $domain
+    (`,` `layer_type` `=` $layerType^)?
+    `,`
+    `inputs` `[` $inputs `]`
+    `,`
+    `outputs` `[` $outputs `]`
+    `,`
+    `deps` `[` $dependencies `]`
+    attr-dict `:` functional-type(operands, results)
+  }];
+}
 
 //===----------------------------------------------------------------------===//
 // analog.array.execute
-// Execute a array in the accelerator
+// Execute an array in the accelerator
 //===----------------------------------------------------------------------===//
 
 def Analog_ArrayExecuteOp
   : Analog_Op<"array.execute"> {
 
-  let summary = "Execute a array in the accelerator";
+  let summary = "Execute an array in the accelerator";
 
   let arguments = (ins
     Variadic<Index>:$indices
@@ -192,19 +346,19 @@ def Analog_ArrayExecuteOp
   );
 
   let assemblyFormat = [{
-    `array` `[` $indices `]` attr-dict `:` qualified(type($grid)) 
+    `array` `[` $indices `]` attr-dict `:` qualified(type($grid))
   }];
 }
 
 //===----------------------------------------------------------------------===//
 // analog.array.store
-// store the results of a array in the accelerator into a memory buffer
+// Store the results of an array in the accelerator into a memory buffer
 //===----------------------------------------------------------------------===//
 
 def Analog_ArrayStoreOp
   : Analog_Op<"array.store"> {
 
-  let summary = "Store the results of a array into a memory buffer";
+  let summary = "Store the results of an array into a memory buffer";
 
   let arguments = (ins
     Analog_MatrixGridType:$grid,

@@ -32,9 +32,11 @@ include_directories(SYSTEM
 add_definitions(${LLVM_DEFINITIONS})
 
 include_directories(SYSTEM ${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_SOURCE_DIR}/runtime/golem-simulator/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
 add_subdirectory(include)
+add_subdirectory(runtime)
 add_subdirectory(lib)
 add_subdirectory(tools)
 
