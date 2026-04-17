@@ -16,6 +16,7 @@ void ExtractLayersPass::runOnOperation() {
   mlir::analog::registerConv2DGroupedExtractor(extractors, &getContext());
   mlir::analog::registerConv3DExtractor(extractors, &getContext());
   mlir::analog::registerRNNCellExtractor(extractors, &getContext());
+  mlir::analog::registerLSTMCellExtractor(extractors, &getContext());
   mlir::analog::registerLinearExtractor(extractors, &getContext());
 
   // Only forward is treated as the source function for layer outlining.

@@ -18,12 +18,14 @@ add_mlir_library(MLIRAnalogTransforms
   converters/Conv3DConverter.cpp
   converters/LinearConverter.cpp
   converters/RNNCellConverter.cpp
+  converters/LSTMCellConverter.cpp
   extractors/LinearExtractor.cpp
   extractors/Conv1DExtractor.cpp
   extractors/Conv2DExtractor.cpp
   extractors/Conv2DGroupedExtractor.cpp
   extractors/Conv3DExtractor.cpp
   extractors/RNNCellExtractor.cpp
+  extractors/LSTMCellExtractor.cpp
 
   LINK_LIBS PUBLIC
   AnalogIR

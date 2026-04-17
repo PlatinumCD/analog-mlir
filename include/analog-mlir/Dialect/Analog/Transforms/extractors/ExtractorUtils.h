@@ -119,6 +119,55 @@ inline bool isTanhGeneric(Operation *op) {
   return detail::genericYieldsSingleOpResult<math::TanhOp>(op);
 }
 
+// Recognizes elementwise mulf regions used in recurrent state updates.
+inline bool isMulfGeneric(Operation *op) {
+  return detail::genericYieldsSingleOpResult<arith::MulFOp>(op);
+}
+
+// Recognizes elementwise sigmoid regions lowered as neg-exp-add-div chains.
+inline bool isSigmoidGeneric(Operation *op) {
+  auto generic = llvm::dyn_cast_or_null<linalg::GenericOp>(op);
+  if (!generic)
+    return false;
+
+  Region &region = generic.getRegion();
+  if (!region.hasOneBlock())
+    return false;
+
+  Block &block = region.front();
+  if (block.empty())
+    return false;
+
+  auto it = block.begin();
+  auto e = block.end();
+
+  auto neg = llvm::dyn_cast<arith::NegFOp>(&*it++);
+  auto exp = (it != e) ? llvm::dyn_cast<math::ExpOp>(&*it++) : math::ExpOp();
+  auto add =
+      (it != e) ? llvm::dyn_cast<arith::AddFOp>(&*it++) : arith::AddFOp();
+  auto div =
+      (it != e) ? llvm::dyn_cast<arith::DivFOp>(&*it++) : arith::DivFOp();
+  auto yield = (it != e) ? llvm::dyn_cast<linalg::YieldOp>(&*it++)
+                         : linalg::YieldOp();
+  if (!neg || !exp || !add || !div || !yield || it != e)
+    return false;
+
+  if (exp.getOperand() != neg.getResult())
+    return false;
+
+  Value unitConstant;
+  if (add.getLhs() == exp.getResult())
+    unitConstant = add.getRhs();
+  else if (add.getRhs() == exp.getResult())
+    unitConstant = add.getLhs();
+  else
+    return false;
+
+  return div.getLhs() == unitConstant && div.getRhs() == add.getResult() &&
+         yield.getNumOperands() == 1 &&
+         yield.getOperand(0) == div.getResult();
+}
+
 // Provides the descriptive operand-count spelling for matcher call sites.
 inline bool hasOperandCount(Operation *op, unsigned count) {
   return hasOperands(op, count);

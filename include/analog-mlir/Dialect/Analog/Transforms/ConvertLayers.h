@@ -137,6 +137,12 @@ void registerRNNCellConverter(LayerConverters &converters,
                               LayerConverterMap &converterMap,
                               MLIRContext *context);
 
+// Installs the built-in LSTM cell converter and every layer_type alias it
+// handles.
+void registerLSTMCellConverter(LayerConverters &converters,
+                               LayerConverterMap &converterMap,
+                               MLIRContext *context);
+
 // Registers the layer conversion pass with MLIR's global pass registry.
 void registerConvertLayersPass();
 

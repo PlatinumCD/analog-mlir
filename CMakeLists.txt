@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(ANALOG_MLIR_BUILD_RUNTIME "Build analog runtime libraries" OFF)
+
 find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Found MLIR at: ${MLIR_DIR}")
 message(STATUS "Found LLVM at: ${LLVM_DIR}")
@@ -36,6 +38,9 @@ include_directories(${PROJECT_SOURCE_DIR}/runtime/golem-simulator/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
 add_subdirectory(include)
+if(ANALOG_MLIR_BUILD_RUNTIME)
+  add_subdirectory(runtime)
+endif()
 add_subdirectory(lib)
 add_subdirectory(tools)
 

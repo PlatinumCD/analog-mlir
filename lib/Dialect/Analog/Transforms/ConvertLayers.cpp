@@ -24,6 +24,8 @@ void ConvertLayersPass::runOnOperation() {
   mlir::analog::registerConv3DConverter(converters, converterMap, &getContext());
   mlir::analog::registerRNNCellConverter(converters, converterMap,
                                          &getContext());
+  mlir::analog::registerLSTMCellConverter(converters, converterMap,
+                                          &getContext());
 
   // Only forward owns the executable layer call sequence for this pass.
   for (mlir::func::FuncOp func : getOperation().getOps<mlir::func::FuncOp>()) {

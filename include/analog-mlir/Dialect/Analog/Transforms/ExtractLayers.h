@@ -71,6 +71,10 @@ void registerConv2DGroupedExtractor(LayerExtractors &extractors,
 void registerRNNCellExtractor(LayerExtractors &extractors,
                               MLIRContext *context);
 
+// Installs the extractor that recognizes LSTM cell computations.
+void registerLSTMCellExtractor(LayerExtractors &extractors,
+                               MLIRContext *context);
+
 // Registers the layer extraction pass with MLIR's global pass registry.
 void registerExtractLayersPass();
 
