@@ -1,26 +1,42 @@
 #include "TaskGraphRuntime.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+
+#include <omp.h>
+
+#ifndef NUM_CORES
+#error "NUM_CORES must be defined"
+#endif
+
+struct RuntimeServices {
+  const int32_t *resolved_core_ids = nullptr;
+};
 
 struct RuntimeHandle {
   GraphImage *graph = nullptr;
   ExecContext exec{};
   RuntimeTask *runtime_tasks = nullptr;
   TaskCall *task_calls = nullptr;
+  int32_t *resolved_core_ids = nullptr;
+  RuntimeServices services{};
   uint32_t slot_count = 0;
 };
 
 namespace {
 
 constexpr uint32_t kPersistentHandleMagic = 0x414E474C;
+constexpr int32_t kRuntimeNumCores = NUM_CORES;
 constexpr int32_t kTaskCoreIdNone = -1;
 constexpr int32_t kRuntimeErrorInvalidArgument = -1;
 constexpr int32_t kRuntimeErrorInvalidGraph = -2;
 constexpr int32_t kRuntimeErrorAllocationFailed = -3;
 constexpr int32_t kRuntimeErrorInvalidBinding = -4;
 constexpr int32_t kRuntimeErrorMissingHandle = -5;
+static_assert(kRuntimeNumCores > 0, "NUM_CORES must be positive");
 
 using PersistentHandleDestroyFn = void (*)(void *);
 
@@ -142,6 +158,70 @@ bool validateGraph(const GraphImage *graph) {
   return true;
 }
 
+void resolveTaskCoreIds(const GraphImage *graph, uint32_t begin, uint32_t end,
+                        int32_t *resolved_core_ids) {
+  if (!graph || !resolved_core_ids || begin >= end)
+    return;
+
+#ifdef ANALOG_RUNTIME_FORWARD_FILL_CORE_IDS
+  int32_t next_core = 0;
+  bool has_explicit_core = false;
+  for (uint32_t i = begin; i < end; ++i) {
+    int32_t core_id = graph->tasks[i].core_id;
+    if (core_id >= 0) {
+      next_core = core_id;
+      has_explicit_core = true;
+    }
+  }
+
+  if (!has_explicit_core) {
+    for (uint32_t i = begin; i < end; ++i)
+      resolved_core_ids[i] = 0;
+    return;
+  }
+
+  for (uint32_t i = end; i-- > begin;) {
+    int32_t core_id = graph->tasks[i].core_id;
+    if (core_id >= 0)
+      next_core = core_id;
+    resolved_core_ids[i] = (core_id >= 0) ? core_id : next_core;
+  }
+#else
+  int32_t current_core = 0;
+  for (uint32_t i = begin; i < end; ++i) {
+    int32_t core_id = graph->tasks[i].core_id;
+    if (core_id >= 0)
+      current_core = core_id;
+    resolved_core_ids[i] = (core_id >= 0) ? core_id : current_core;
+  }
+#endif
+}
+
+bool validateResolvedCoreIds(const GraphImage *graph,
+                             const int32_t *resolved_core_ids) {
+  if (!graph || !resolved_core_ids)
+    return false;
+
+  for (uint32_t i = 0; i < graph->task_count; ++i) {
+    int32_t core_id = resolved_core_ids[i];
+    if (core_id < 0 || core_id >= kRuntimeNumCores)
+      return false;
+  }
+
+  for (uint32_t i = graph->init_task_count; i < graph->task_count; ++i) {
+    const TaskDesc &task = graph->tasks[i];
+    for (uint32_t dep_index = 0; dep_index < task.dep_count; ++dep_index) {
+      uint32_t dependency = graph->deps[task.dep_begin + dep_index];
+      if (dependency >= graph->init_task_count &&
+          resolved_core_ids[dependency] != resolved_core_ids[i]) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 void destroyRuntimeHandle(RuntimeHandle *runtime) {
   if (!runtime)
     return;
@@ -161,13 +241,15 @@ void destroyRuntimeHandle(RuntimeHandle *runtime) {
 
   std::free(runtime->runtime_tasks);
   std::free(runtime->task_calls);
+  std::free(runtime->resolved_core_ids);
   std::free(runtime->exec.slots);
   std::free(runtime->exec.workspace);
   analog_runtime_graph_destroy(runtime->graph);
   std::free(runtime);
 }
 
-int32_t runTaskRange(RuntimeHandle *runtime, uint32_t begin, uint32_t end) {
+int32_t runTaskRangeSerial(RuntimeHandle *runtime, uint32_t begin,
+                           uint32_t end) {
   if (!runtime || !runtime->runtime_tasks)
     return kRuntimeErrorInvalidArgument;
 
@@ -182,6 +264,57 @@ int32_t runTaskRange(RuntimeHandle *runtime, uint32_t begin, uint32_t end) {
   }
 
   return 0;
+}
+
+int32_t runTaskRangeParallel(RuntimeHandle *runtime, uint32_t begin,
+                             uint32_t end) {
+  if (!runtime || !runtime->runtime_tasks || !runtime->resolved_core_ids)
+    return kRuntimeErrorInvalidArgument;
+
+  int32_t thread_errors[kRuntimeNumCores];
+  uint32_t failure_task_indices[kRuntimeNumCores];
+  for (int32_t i = 0; i < kRuntimeNumCores; ++i) {
+    thread_errors[i] = 0;
+    failure_task_indices[i] = std::numeric_limits<uint32_t>::max();
+  }
+
+#pragma omp parallel num_threads(kRuntimeNumCores)
+  {
+    int32_t thread_id = omp_get_thread_num();
+    int32_t &thread_error = thread_errors[thread_id];
+    uint32_t &failure_task_index = failure_task_indices[thread_id];
+
+    for (uint32_t i = begin; i < end; ++i) {
+      int32_t tid = runtime->resolved_core_ids[i];
+      RuntimeTask &task = runtime->runtime_tasks[i];
+      if (thread_id == tid && thread_error == 0) {
+        if (!task.fn) {
+          thread_error = kRuntimeErrorInvalidGraph;
+          failure_task_index = i;
+        } else {
+          std::fprintf(stderr, "task %u core %d\n", i, tid);
+          int32_t rc = task.fn(task.opaque);
+          if (rc != 0) {
+            thread_error = rc;
+            failure_task_index = i;
+          }
+        }
+      }
+
+#pragma omp barrier
+    }
+  }
+
+  int32_t error_code = 0;
+  uint32_t earliest_failure = std::numeric_limits<uint32_t>::max();
+  for (int32_t i = 0; i < kRuntimeNumCores; ++i) {
+    if (thread_errors[i] != 0 && failure_task_indices[i] < earliest_failure) {
+      earliest_failure = failure_task_indices[i];
+      error_code = thread_errors[i];
+    }
+  }
+
+  return error_code;
 }
 
 } // namespace
@@ -352,11 +485,23 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
   runtime->exec.slots = allocateZeroedArray<SlotValue>(runtime->slot_count);
   runtime->runtime_tasks = allocateZeroedArray<RuntimeTask>(graph->task_count);
   runtime->task_calls = allocateZeroedArray<TaskCall>(graph->task_count);
+  runtime->resolved_core_ids = allocateZeroedArray<int32_t>(graph->task_count);
+  runtime->services.resolved_core_ids = runtime->resolved_core_ids;
+  runtime->exec.services = &runtime->services;
 
   if ((graph->workspace_size && !runtime->exec.workspace) ||
       (runtime->slot_count && !runtime->exec.slots) ||
       (graph->task_count && !runtime->runtime_tasks) ||
-      (graph->task_count && !runtime->task_calls)) {
+      (graph->task_count && !runtime->task_calls) ||
+      (graph->task_count && !runtime->resolved_core_ids)) {
+    destroyRuntimeHandle(runtime);
+    return nullptr;
+  }
+
+  resolveTaskCoreIds(graph, 0, graph->init_task_count, runtime->resolved_core_ids);
+  resolveTaskCoreIds(graph, graph->init_task_count, graph->task_count,
+                     runtime->resolved_core_ids);
+  if (!validateResolvedCoreIds(graph, runtime->resolved_core_ids)) {
     destroyRuntimeHandle(runtime);
     return nullptr;
   }
@@ -396,7 +541,7 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
     runtime->runtime_tasks[i].opaque = &runtime->task_calls[i];
   }
 
-  if (runTaskRange(runtime, 0, graph->init_task_count) != 0) {
+  if (runTaskRangeParallel(runtime, 0, graph->init_task_count) != 0) {
     destroyRuntimeHandle(runtime);
     return nullptr;
   }
@@ -431,8 +576,8 @@ int32_t analog_runtime_execute(RuntimeHandle *runtime,
     }
   }
 
-  return runTaskRange(runtime, runtime->graph->init_task_count,
-                      runtime->graph->task_count);
+  return runTaskRangeParallel(runtime, runtime->graph->init_task_count,
+                              runtime->graph->task_count);
 }
 
 void analog_runtime_destroy(RuntimeHandle *runtime) {
@@ -552,7 +697,19 @@ int32_t analog_runtime_task_core_id(void *opaque) {
   const TaskCall *call = castTaskCall(opaque);
   if (!call || !call->task)
     return kTaskCoreIdNone;
-  return call->task->core_id;
+
+  const RuntimeServices *services = nullptr;
+  if (call->exec)
+    services = static_cast<const RuntimeServices *>(call->exec->services);
+  if (!services || !services->resolved_core_ids || !call->graph ||
+      call->task < call->graph->tasks) {
+    return call->task->core_id;
+  }
+
+  uint32_t task_index = static_cast<uint32_t>(call->task - call->graph->tasks);
+  if (task_index >= call->graph->task_count)
+    return call->task->core_id;
+  return services->resolved_core_ids[task_index];
 }
 
 void analog_runtime_copy_to_buffer(void *dst, const void *src, uint64_t size) {
