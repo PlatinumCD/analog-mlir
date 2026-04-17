@@ -152,13 +152,10 @@ LogicalResult rewriteShimCall(LLVM::CallOp call, StringRef calleeName,
   }
 
   Value dataPtr = call.getOperand(1);
+  Value offset = call.getOperand(2);
   Value arrayId = call.getOperand(call.getNumOperands() - 1);
-  Value effectiveDataPtr = dataPtr;
-  if (kind != ShimKind::Set) {
-    Value offset = call.getOperand(2);
-    effectiveDataPtr =
-        buildEffectiveDataPointer(rewriter, call.getLoc(), dataPtr, offset);
-  }
+  Value effectiveDataPtr =
+      buildEffectiveDataPointer(rewriter, call.getLoc(), dataPtr, offset);
 
   rewriter.create<LLVM::CallIntrinsicOp>(
       call.getLoc(), Type{}, rewriter.getStringAttr(getTargetIntrinsicName(kind)),
