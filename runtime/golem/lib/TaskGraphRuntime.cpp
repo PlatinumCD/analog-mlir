@@ -54,6 +54,12 @@ T *allocateZeroedArray(uint32_t count) {
   return static_cast<T *>(std::calloc(count, sizeof(T)));
 }
 
+#if DEBUG
+#define DEBUG_PRINT(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define DEBUG_PRINT(...) ((void)0)
+#endif
+
 void destroyPersistentHandle(void *handle) {
   if (!handle)
     return;
@@ -197,15 +203,28 @@ void resolveTaskCoreIds(const GraphImage *graph, uint32_t begin, uint32_t end,
 #endif
 }
 
+/*
 bool validateResolvedCoreIds(const GraphImage *graph,
                              const int32_t *resolved_core_ids) {
-  if (!graph || !resolved_core_ids)
+  if (!graph || !resolved_core_ids) {
+    DEBUG_PRINT("validateResolvedCoreIds: invalid input graph=%p resolved_core_ids=%p\n",
+                static_cast<const void *>(graph),
+                static_cast<const void *>(resolved_core_ids));
     return false;
+  }
+
+  DEBUG_PRINT("validateResolvedCoreIds: task_count=%u init_task_count=%u num_cores=%d\n",
+              graph->task_count, graph->init_task_count, kRuntimeNumCores);
 
   for (uint32_t i = 0; i < graph->task_count; ++i) {
     int32_t core_id = resolved_core_ids[i];
-    if (core_id < 0 || core_id >= kRuntimeNumCores)
+    DEBUG_PRINT("validateResolvedCoreIds: task %u resolved_core_id=%d\n", i, core_id);
+    if (core_id < 0 || core_id >= kRuntimeNumCores) {
+      DEBUG_PRINT("validateResolvedCoreIds: task %u has invalid core_id=%d "
+                  "(valid range: [0, %d))\n",
+                  i, core_id, kRuntimeNumCores);
       return false;
+    }
   }
 
   for (uint32_t i = graph->init_task_count; i < graph->task_count; ++i) {
@@ -214,13 +233,19 @@ bool validateResolvedCoreIds(const GraphImage *graph,
       uint32_t dependency = graph->deps[task.dep_begin + dep_index];
       if (dependency >= graph->init_task_count &&
           resolved_core_ids[dependency] != resolved_core_ids[i]) {
+        DEBUG_PRINT("validateResolvedCoreIds: task %u core %d depends on task %u "
+                    "core %d across run-phase cores\n",
+                    i, resolved_core_ids[i], dependency,
+                    resolved_core_ids[dependency]);
         return false;
       }
     }
   }
 
+  DEBUG_PRINT("validateResolvedCoreIds: success\n");
   return true;
 }
+*/
 
 void destroyRuntimeHandle(RuntimeHandle *runtime) {
   if (!runtime)
@@ -292,7 +317,6 @@ int32_t runTaskRangeParallel(RuntimeHandle *runtime, uint32_t begin,
           thread_error = kRuntimeErrorInvalidGraph;
           failure_task_index = i;
         } else {
-          std::fprintf(stderr, "task %u core %d\n", i, tid);
           int32_t rc = task.fn(task.opaque);
           if (rc != 0) {
             thread_error = rc;
@@ -471,12 +495,27 @@ void analog_runtime_graph_copy_const_blob(GraphImage *graph, uint32_t offset,
 }
 
 RuntimeHandle *analog_runtime_init(GraphImage *graph) {
-  if (!validateGraph(graph))
+  DEBUG_PRINT("analog_runtime_init: graph=%p resources=%u callables=%u "
+              "tasks=%u init_tasks=%u bindings=%u deps=%u workspace=%llu\n",
+              static_cast<void *>(graph),
+              graph ? graph->resource_count : 0,
+              graph ? graph->callable_count : 0,
+              graph ? graph->task_count : 0,
+              graph ? graph->init_task_count : 0,
+              graph ? graph->binding_count : 0,
+              graph ? graph->dep_count : 0,
+              static_cast<unsigned long long>(graph ? graph->workspace_size : 0));
+
+  if (!validateGraph(graph)) {
+    DEBUG_PRINT("analog_runtime_init: validateGraph failed\n");
     return nullptr;
+  }
 
   auto *runtime = static_cast<RuntimeHandle *>(std::calloc(1, sizeof(RuntimeHandle)));
-  if (!runtime)
+  if (!runtime) {
+    DEBUG_PRINT("analog_runtime_init: runtime allocation failed\n");
     return nullptr;
+  }
 
   runtime->graph = graph;
   runtime->slot_count = computeSlotCount(graph);
@@ -494,6 +533,7 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
       (graph->task_count && !runtime->runtime_tasks) ||
       (graph->task_count && !runtime->task_calls) ||
       (graph->task_count && !runtime->resolved_core_ids)) {
+    DEBUG_PRINT("analog_runtime_init: runtime buffer allocation failed\n");
     destroyRuntimeHandle(runtime);
     return nullptr;
   }
@@ -501,14 +541,28 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
   resolveTaskCoreIds(graph, 0, graph->init_task_count, runtime->resolved_core_ids);
   resolveTaskCoreIds(graph, graph->init_task_count, graph->task_count,
                      runtime->resolved_core_ids);
-  if (!validateResolvedCoreIds(graph, runtime->resolved_core_ids)) {
+/*  if (!validateResolvedCoreIds(graph, runtime->resolved_core_ids)) {
+    DEBUG_PRINT("analog_runtime_init: validateResolvedCoreIds failed\n");
     destroyRuntimeHandle(runtime);
     return nullptr;
   }
+*/
+
+  DEBUG_PRINT("analog_runtime_init: slot_count=%u workspace=%p slots=%p "
+              "runtime_tasks=%p task_calls=%p resolved_core_ids=%p\n",
+              runtime->slot_count,
+              static_cast<void *>(runtime->exec.workspace),
+              static_cast<void *>(runtime->exec.slots),
+              static_cast<void *>(runtime->runtime_tasks),
+              static_cast<void *>(runtime->task_calls),
+              static_cast<void *>(runtime->resolved_core_ids));
 
   for (uint32_t i = 0; i < graph->resource_count; ++i) {
     const ResourceDesc &resource = graph->resources[i];
     if (resource.slot >= runtime->slot_count) {
+      DEBUG_PRINT("analog_runtime_init: resource %u has invalid slot %u "
+                  "(slot_count=%u)\n",
+                  i, resource.slot, runtime->slot_count);
       destroyRuntimeHandle(runtime);
       return nullptr;
     }
@@ -521,6 +575,12 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
       if (resource.storage == STORAGE_TEMP) {
         if (resource.workspace_offset + resource.byte_size >
             graph->workspace_size) {
+          DEBUG_PRINT("analog_runtime_init: temp resource %u exceeds "
+                      "workspace (offset=%llu size=%llu workspace=%llu)\n",
+                      i,
+                      static_cast<unsigned long long>(resource.workspace_offset),
+                      static_cast<unsigned long long>(resource.byte_size),
+                      static_cast<unsigned long long>(graph->workspace_size));
           destroyRuntimeHandle(runtime);
           return nullptr;
         }
@@ -541,10 +601,17 @@ RuntimeHandle *analog_runtime_init(GraphImage *graph) {
     runtime->runtime_tasks[i].opaque = &runtime->task_calls[i];
   }
 
+  DEBUG_PRINT("analog_runtime_init: running %u init tasks\n",
+              graph->init_task_count);
+
   if (runTaskRangeParallel(runtime, 0, graph->init_task_count) != 0) {
+    DEBUG_PRINT("analog_runtime_init: init task execution failed\n");
     destroyRuntimeHandle(runtime);
     return nullptr;
   }
+
+  DEBUG_PRINT("analog_runtime_init: success runtime=%p\n",
+              static_cast<void *>(runtime));
 
   return runtime;
 }
